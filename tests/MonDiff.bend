@@ -37,6 +37,73 @@ def swap.outs(+args: List<&2, String>, files: List<&2, String>) -> List<&2, Stri
     case Con{+f, rest}:
       M.run(args, N.swap.config(), c => _ => N.swap.run(c, f)) <> swap.outs(args, rest)
 
+# Network at each step: parseNet from the reading kept (its IORef's) to the
+# step's, at 0 seconds between them, as the reference's stopped clock has it
+def net.outs(+dev: String, +args: List<&2, String>, procs: List<&2, String>, opers: List<&2, String>, k: N.Kept) -> List<&2, String>:
+  match procs opers:
+    case Con{+p, pr} Con{+o, orr}:
+      +s = N.net.step(k, N.find.raw(dev, N.net.devs(p)), N.operstate.up(o), 0.0)
+      +r = N.step.rate(s)
+      M.run(args, N.net.config(), c => a => N.net.run(c, a, r)) <> net.outs(dev, args, pr, orr, N.step.kept(s))
+    case _ _:
+      Nil{}
+
+def net.first.of(+dev: String, procs: List<&2, String>) -> N.Kept:
+  match procs:
+    case Con{+p, _}:
+      N.net.first(N.find.raw(dev, N.net.devs(p)))
+    case Nil{}:
+      N.net.first(N.RawNA{})
+
+# DynNetwork's step: each device's parseNet, the readings kept next
+type DynSt is Data:
+  DynSt{named: List<&2, N.Named>, kept: List<&2, N.Kept>}
+
+def dyn.cons(+x: N.Named, k: N.Kept, st: DynSt) -> DynSt:
+  match st:
+    case DynSt{ns, ks}:
+      DynSt{x <> ns, k <> ks}
+
+def dyn.step(devs: List<&2, String>, ks: List<&2, N.Kept>, +p: String, os: List<&2, String>) -> DynSt:
+  match devs ks os:
+    case Con{+d, dr} Con{k, kr} Con{+o, orr}:
+      +s = N.net.step(k, N.find.raw(d, N.net.devs(p)), N.operstate.up(o), 0.0)
+      dyn.cons(N.Named{d, N.step.rate(s)}, N.step.kept(s), dyn.step(dr, kr, p, orr))
+    case _ _ _:
+      DynSt{Nil{}, Nil{}}
+
+def dyn.kept(st: DynSt) -> List<&2, N.Kept>:
+  match st:
+    case DynSt{_, ks}:
+      ks
+
+def dyn.out(+args: List<&2, String>, st: DynSt) -> String:
+  match st:
+    case DynSt{+ns, _}:
+      M.run(args, N.net.config(), c => a => N.dyn.run(c, a, ns))
+
+def dyn.outs(+devs: List<&2, String>, +args: List<&2, String>, procs: List<&2, String>, opers: List<&2, List<&2, String>>, ks: List<&2, N.Kept>) -> List<&2, String>:
+  match procs opers:
+    case Con{+p, pr} Con{os, orr}:
+      +st = dyn.step(devs, ks, p, os)
+      dyn.out(args, st) <> dyn.outs(devs, args, pr, orr, dyn.kept(st))
+    case _ _:
+      Nil{}
+
+def dyn.firsts(devs: List<&2, String>, +p: String) -> List<&2, N.Kept>:
+  match devs:
+    case Nil{}:
+      Nil{}
+    case Con{+d, rest}:
+      N.net.first(N.find.raw(d, N.net.devs(p))) <> dyn.firsts(rest, p)
+
+def head.or(xs: List<&2, String>) -> String:
+  match xs:
+    case Con{x, _}:
+      x
+    case Nil{}:
+      ""
+
 type Tally is Data:
   Tally{same: Nat, differ: Nat, report: String}
 
@@ -63,6 +130,10 @@ def one(c: C.Case, t: Tally) -> Tally:
       compare(w, mem.outs(args, files), t, "memory", args, 0n)
     case C.SwapCase{+args, +files, w}:
       compare(w, swap.outs(args, files), t, "swap", args, 0n)
+    case C.NetCase{+dev, +args, +procs, opers, w}:
+      compare(w, net.outs(dev, args, procs, opers, net.first.of(dev, procs)), t, "network " ++ dev, args, 0n)
+    case C.DynCase{+devs, +args, +procs, opers, w}:
+      compare(w, dyn.outs(devs, args, procs, opers, dyn.firsts(devs, head.or(procs))), t, "dynnetwork " ++ H.show.list(strs(devs)), args, 0n)
 
 def all(cs: List<&2, C.Case>, t: Tally) -> Tally:
   match cs:

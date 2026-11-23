@@ -113,3 +113,91 @@ bStr s = "\"" ++ concatMap esc s ++ "\""
 bList :: [String] -> String
 bList xs = "[" ++ intercalate ", " (map bStr xs) ++ "]"
 
+
+-- Network and DynNetwork
+
+netNames :: [String]
+netNames = ["eth0", "wlp5s0", "lo", "tailscale0", "docker0", "enp3s0", "veth1a"]
+
+netFields :: [String]
+netFields = ["dev", "rx", "tx", "rxbar", "rxvbar", "rxipat", "txbar", "txvbar", "txipat", "up"]
+
+gNetOwn :: Gen [String]
+gNetOwn = frequency
+  [ (4, pure [])
+  , (3, concat <$> (choose (1, 3) >>= flip vectorOf (frequency
+      [ (1, (\p -> ["--rx-icon-pattern", p]) <$> gPattern)
+      , (1, (\p -> ["--tx-icon-pattern", p]) <$> gPattern)
+      , (2, (\s -> ["--up", s]) <$> elements ["+", "UP", ""])
+      , (2, (\ds -> ["--devices", intercalate "," ds]) <$> sublistOf netNames)
+      ])))
+  , (1, elements [["--bogus"], ["--up"]])
+  ]
+
+-- /proc/net/dev's text: its two header lines, then each device's line: its
+-- name right-aligned in 6 as the kernel writes it, a colon (then a space,
+-- unless tight) and its 16 counters
+netDevText :: [(String, [Integer], Bool)] -> String
+netDevText ds = unlines (header ++ [devLine n xs t | (n, xs, t) <- ds])
+  where
+    header =
+      [ "Inter-|   Receive                                                |  Transmit"
+      , " face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed"
+      ]
+    devLine n xs t = replicate (max 0 (6 - length n)) ' ' ++ n ++ ":" ++ (if t then "" else " ") ++ unwords (map show xs)
+
+gCounter :: Gen Integer
+gCounter = frequency [(3, choose (0, 100000)), (1, choose (0, 2 ^ (40 :: Int)))]
+
+-- a device's counters at each step: they mostly grow, sometimes stay,
+-- sometimes go back (a reset: Word64's difference wraps) or jump, and
+-- now and then pass 2^64 (read at Word64 keeps them modulo 2^64)
+gCounterSteps :: Int -> Gen [[Integer]]
+gCounterSteps steps = do
+  c0 <- vectorOf 16 gCounter
+  let next xs = forM xs $ \x -> frequency
+        [ (6, (x +) <$> choose (0, 200000))
+        , (2, pure x)
+        , (1, choose (0, x))
+        , (1, (x +) <$> choose (0, 2 ^ (40 :: Int)))
+        , (1, (2 ^ (64 :: Int) +) <$> choose (0, 1000))
+        ]
+      go 1 xs = pure [xs]
+      go k xs = (xs :) <$> (next xs >>= go (k - 1))
+  go steps c0
+
+-- an operstate file's text at each step: mostly the same as the step
+-- before; what xmobar compares is its first line
+gOperstates :: Int -> Gen [String]
+gOperstates steps = do
+  let st = frequency [(4, pure "up\n"), (2, pure "unknown\n"), (3, pure "down\n"), (1, pure "dormant\n"), (1, elements ["up", "UP\n", "up x\n", " up\n", "unknown\nup\n", "down\nup\n", "up\ndown\n"])]
+      go 1 _ = pure []
+      go k prev = do
+        s <- frequency [(3, pure prev), (2, st)]
+        (s :) <$> go (k - 1) s
+  s0 <- st
+  (s0 :) <$> go steps s0
+
+-- the network monitors' files at each step: /proc/net/dev (the devices in
+-- it may change), and /sys/class/net/NAME/operstate for each NAME of the
+-- devices in /sys (one may have no operstate, every step)
+data NetSteps = NetSteps
+  { nsSys :: [String] -- the devices in /sys/class/net
+  , nsProc :: [String] -- /proc/net/dev at each step
+  , nsOper :: [(String, Maybe [String])] -- each sys device's operstates
+  }
+
+gNetSteps :: Int -> Gen NetSteps
+gNetSteps steps = do
+  inProc0 <- sublistOf netNames >>= shuffle
+  inSys <- sublistOf netNames >>= shuffle
+  tight <- forM netNames (const (frequency [(3, pure False), (1, pure True)]))
+  counters <- forM netNames (const (gCounterSteps steps))
+  present <- forM [1 .. steps] $ \_ -> frequency [(5, pure inProc0), (1, sublistOf netNames >>= shuffle)]
+  opers <- forM inSys $ \_ -> frequency [(9, Just <$> gOperstates steps), (1, pure Nothing)]
+  let at n = head [(t, cs) | (m, t, cs) <- zip3 netNames tight counters, m == n]
+      text k = netDevText [(n, snd (at n) !! k, fst (at n)) | n <- present !! k]
+  pure (NetSteps inSys [text k | k <- [0 .. steps - 1]] (zip inSys opers))
+
+bLists :: [[String]] -> String
+bLists xss = "[" ++ intercalate ", " (map bList xss) ++ "]"

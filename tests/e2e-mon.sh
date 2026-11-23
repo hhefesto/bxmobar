@@ -9,7 +9,7 @@ here=${0:A:h}
 seed=${1:-1} count=${2:-100}
 : ${GHC:?a ghc with xmobar (.#ghc-xmobar)} ${BWRAP:?bubblewrap} ${BEND:=bend}
 out=$(mktemp -d)
-$GHC -O1 -threaded -outputdir $out/o1 -o $out/monref $here/gen/MonRef.hs > $out/ghc.log 2>&1 || { cat $out/ghc.log; exit 1 }
+$GHC -O1 -threaded -i$here/gen -outputdir $out/o1 -o $out/monref $here/gen/MonRef.hs > $out/ghc.log 2>&1 || { cat $out/ghc.log; exit 1 }
 $GHC -O1 -i$here/gen -outputdir $out/o2 -o $out/gene2e $here/gen/GenE2E.hs >> $out/ghc.log 2>&1 || { cat $out/ghc.log; exit 1 }
 if [[ -z ${XB:-} ]]; then
   (cd $here/.. && BEND_NO_TELEMETRY=1 $BEND Main.bend -o $out/xmobar-bend)

@@ -323,10 +323,21 @@ def with.units(fuel: Nat, +d: Nat, +n: U32, +x: F32) -> String:
       +g = f
       H.Bool.if(String, F32.is_lt(x, 0.0), _ => "-" ++ with.units(g, d, n, F32.neg(x)), _ => H.Bool.if(String, Bool.or(U32.is_gt(n, 3), F32.is_lt(x, pow10.f(1n+d))), _ => F.show.round(x) ++ units(n), _ => H.Bool.if(String, F32.is_le(x, 1024.0), _ => F.fixed(d, (x / 1024.0 : F32)) ++ units(U32.add(n, 1)), _ => with.units(g, d, U32.add(n, 1), (x / 1024.0 : F32)))))
 
+# 2^63
+def two.pow63() -> F32:
+  (4294967296.0 * 2147483648.0 : F32)
+
+# round :: Float -> Int, as GHC compiles it (its rule: rint, then float2Int#,
+# x86-64's cvttss2si): -2^63 for what does not fit an Int (NaN, the
+# infinities, |x| >= 2^63)
+def round.int(+y: F32) -> F32:
+  +r = F.round.f(y)
+  H.Bool.if(F32, Bool.and(F32.is_le(F32.neg(two.pow63()), r), F32.is_lt(r, two.pow63())), _ => r, _ => F32.neg(two.pow63()))
+
 # takeDigits d x
 def take.digits(+d: Nat, +x: F32) -> F32:
   +fact = pow10.f(d)
-  (F.round.f((x * fact : F32)) / fact : F32)
+  (round.int((x * fact : F32)) / fact : F32)
 
 # The monitor's template (Common.Parsers) -------------------------------------------
 

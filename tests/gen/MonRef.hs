@@ -16,34 +16,17 @@ import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar
 import Control.Exception (BlockedIndefinitelyOnMVar (..), catch)
 import Control.Monad (foldM_, forM_, when)
-import System.Directory (doesDirectoryExist, listDirectory)
 import System.Environment (lookupEnv)
 import Xmobar.System.StatFS (FileSystemStats (..), getFileSystemStats)
 import System.Environment (getArgs)
+import Install (install)
 import System.FilePath ((</>))
 import System.IO (hFlush, stdout)
-import qualified Data.ByteString.Char8 as B
 import System.Posix.IO (OpenFileFlags (..), OpenMode (WriteOnly), closeFd, defaultFileFlags, fdWrite, openFd)
 import Xmobar.Plugins.Monitors (Monitors)
 import Xmobar.Run.Exec (start)
 import Xmobar.App.Config (defaultConfig)
 import Xmobar.Text.Output (format)
-
--- each file of a step written over the file of the same name in CUR (the
--- same inode, so what bwrap bound sees it), through a bare descriptor:
--- GHC's own handles would lock the inode the monitor reads
-install :: FilePath -> FilePath -> IO ()
-install cur step = do
-  fs <- listDirectory step
-  forM_ fs $ \f -> do
-    dir <- doesDirectoryExist (step </> f)
-    if dir
-      then install (cur </> f) (step </> f)
-      else do
-        s <- B.readFile (step </> f)
-        fd <- openFd (cur </> f) WriteOnly defaultFileFlags {trunc = True}
-        _ <- fdWrite fd (B.unpack s)
-        closeFd fd
 
 splitOn :: Char -> String -> [String]
 splitOn c s = case break (== c) s of

@@ -571,6 +571,78 @@ def diff.rate(a: Dev, b: Dev, +scx0: F32) -> Rate:
     case _ _:
       RateNA{}
 
+# A reading as parseNet keeps it in its IORef. Haskell reads a reading's
+# operstate (unsafeInterleaveIO) only when diffRate first looks at it: at
+# once, unless the reading before it was down (N d NI, diffRate's second
+# clause, which does not look at the new one), and then at the next step,
+# from the operstate of that step. Raw: the device's line, its up flag not
+# yet read
+type Raw is Data:
+  Raw{name: String, rx: Maybe<&2, List<&2, U32>>, tx: Maybe<&2, List<&2, U32>>}
+  RawNA{}
+
+type Kept is Data:
+  Seen{d: Dev}
+  Unseen{r: Raw}
+
+# findNetDev without the up flag
+def find.raw(+name: String, ls: List<&2, Line>) -> Raw:
+  match ls:
+    case Nil{}:
+      RawNA{}
+    case Line{+n, rx, tx} <> rest:
+      H.Bool.if(Raw, String.eq(n, name), _ => Raw{n, rx, tx}, _ => find.raw(name, rest))
+
+def raw.dev(r: Raw, +up: Bool) -> Dev:
+  match r:
+    case Raw{n, rx, tx}:
+      dev.of(up, n, rx, tx)
+    case RawNA{}:
+      DevNA{}
+
+def seen(k: Kept, +up: Bool) -> Dev:
+  match k:
+    case Seen{d}:
+      d
+    case Unseen{r}:
+      raw.dev(r, up)
+
+# parseNet's step: the rate from the reading kept to the new one (up: the
+# operstate now, which a reading not yet looked at reads too), and what is
+# kept next
+type Step is Data:
+  Step{rate: Rate, kept: Kept}
+
+def net.step.at(a: Dev, b: Raw, +up: Bool, +scx: F32) -> Step:
+  match a:
+    case DevDown{+n}:
+      Step{RateDown{n}, Unseen{b}}
+    case DevUp{n, r, t}:
+      +d = raw.dev(b, up)
+      Step{diff.rate(DevUp{n, r, t}, d, scx), Seen{d}}
+    case DevNA{}:
+      +d = raw.dev(b, up)
+      Step{diff.rate(DevNA{}, d, scx), Seen{d}}
+
+def net.step(k: Kept, b: Raw, +up: Bool, +scx: F32) -> Step:
+  net.step.at(seen(k, up), b, up, scx)
+
+def step.kept(s: Step) -> Kept:
+  match s:
+    case Step{_, k}:
+      k
+
+def step.rate(s: Step) -> Rate:
+  match s:
+    case Step{r, _}:
+      r
+
+# the first reading, as startNet (and startDynNet, for each device) keeps
+# it: its parseNet's answer is never looked at, so neither is the reading's
+# operstate, which the first run reads then
+def net.first(b: Raw) -> Kept:
+  Unseen{b}
+
 def byte.units(+v: F32) -> String:
   H.Bool.if(String, F32.is_lt(v, 1024.0), _ => "B/s", _ => H.Bool.if(String, F32.is_lt(v, 1048576.0), _ => "KB/s", _ => H.Bool.if(String, F32.is_lt(v, 1073741824.0), _ => "MB/s", _ => "GB/s")))
 

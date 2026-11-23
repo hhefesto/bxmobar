@@ -92,6 +92,11 @@
           bend = bendFor pkgs;
           # xmobar itself, as nixpkgs builds it: the end-to-end reference
           xmobar = pkgs.haskellPackages.xmobar;
+          # what the differential tests run the references in: bwrap puts
+          # a case's files in /proc and /sys, faketime stops the reference's
+          # clock (so a rate is the counters' difference, as at scx' = 1)
+          bubblewrap = pkgs.bubblewrap;
+          libfaketime = pkgs.libfaketime;
         }
       );
 

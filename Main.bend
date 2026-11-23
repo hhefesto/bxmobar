@@ -77,7 +77,7 @@ type Keep is Data:
 
 # a network device's last reading and when
 type Ref is Data:
-  Ref{name: String, dev: N.Dev, t: Now}
+  Ref{name: String, kept: N.Kept, t: Now}
 
 # a part's command: none (constant text), a monitor (its constructor, its
 # arguments, its value read), Date, a StdinReader, Com, or not ported
@@ -200,17 +200,26 @@ def read.cpu() -> IO(List<&2, List<&2, U32>>):
     t : String <- S.slurp("/proc/stat")
     IO.pure(List<&2, List<&2, U32>>, N.cpu.data(t))
 
-def net.read(+name: String) -> IO(N.Dev):
-  do IO<N.Dev>:
+# a device's line now, and whether its operstate says up
+type Read is Data:
+  Read{raw: N.Raw, up: Bool}
+
+def net.read(+name: String) -> IO(Read):
+  do IO<Read>:
     t : String <- S.slurp("/proc/net/dev")
     o : String <- S.slurp("/sys/class/net/" ++ name ++ "/operstate")
-    IO.pure(N.Dev, N.find.dev(name, N.net.devs(t), N.operstate.up(o)))
+    IO.pure(Read, Read{N.find.raw(name, N.net.devs(t)), N.operstate.up(o)})
+
+def ref.of(+name: String, r: Read, +n: Now) -> Ref:
+  match r:
+    case Read{raw, _}:
+      Ref{name, N.net.first(raw), n}
 
 def net.ref(+name: String) -> IO(Ref):
   do IO<Ref>:
-    d : N.Dev <- net.read(name)
+    r : Read <- net.read(name)
     n : Now <- clock()
-    IO.pure(Ref, Ref{name, d, n})
+    IO.pure(Ref, ref.of(name, r, n))
 
 # a device is one of /sys/class/net's with an operstate (lo left out)
 def net.keep(names: List<&2, String>) -> IO(List<&2, String>):
@@ -242,16 +251,23 @@ def rates.cons(+x: N.Named, +r: Ref, rs: Rates) -> Rates:
     case Rates{ns, refs}:
       Rates{x <> ns, r <> refs}
 
+# parseNet at a reading: the rate since the reading kept, and the new one kept
+def rates.step(+name: String, k: N.Kept, +t0: Now, r: Read, +t1: Now, more: Rates) -> Rates:
+  match r:
+    case Read{raw, +up}:
+      +s = N.net.step(k, raw, up, seconds(t0, t1))
+      rates.cons(N.Named{name, N.step.rate(s)}, Ref{name, N.step.kept(s), t1}, more)
+
 def net.rates(refs: List<&2, Ref>) -> IO(Rates):
   match refs:
     case Nil{}:
       IO.pure(Rates, Rates{Nil{}, Nil{}})
-    case Con{Ref{+name, d0, +t0}, rest}:
+    case Con{Ref{+name, k0, +t0}, rest}:
       do IO<Rates>:
-        +d1 : N.Dev <- net.read(name)
+        r1 : Read <- net.read(name)
         +t1 : Now <- clock()
         more : Rates <- net.rates(rest)
-        IO.pure(Rates, rates.cons(N.Named{name, N.diff.rate(d0, d1, seconds(t0, t1))}, Ref{name, d1, t1}, more))
+        IO.pure(Rates, rates.step(name, k0, t0, r1, t1, more))
 
 def disk.specs.go(xs: List<&2, R.HV>) -> List<&2, N.DT>:
   match xs:

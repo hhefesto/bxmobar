@@ -50,24 +50,6 @@ data Case = Case
 
 -- Network and DynNetwork -------------------------------------------------------
 
-netNames :: [String]
-netNames = ["eth0", "wlp5s0", "lo", "tailscale0", "docker0", "enp3s0", "veth1a"]
-
-netFields :: [String]
-netFields = ["dev", "rx", "tx", "rxbar", "rxvbar", "rxipat", "txbar", "txvbar", "txipat", "up"]
-
-gNetOwn :: Gen [String]
-gNetOwn = frequency
-  [ (4, pure [])
-  , (3, concat <$> (choose (1, 3) >>= flip vectorOf (frequency
-      [ (1, (\p -> ["--rx-icon-pattern", p]) <$> gPattern)
-      , (1, (\p -> ["--tx-icon-pattern", p]) <$> gPattern)
-      , (2, (\s -> ["--up", s]) <$> elements ["+", "UP", ""])
-      , (2, (\ds -> ["--devices", intercalate "," ds]) <$> sublistOf netNames)
-      ])))
-  , (1, elements [["--bogus"], ["--up"]])
-  ]
-
 gNet :: Bool -> Gen Case
 gNet dyn = do
   inProc <- sublistOf netNames >>= shuffle
@@ -76,12 +58,7 @@ gNet dyn = do
     [(4, pure (Just "up")), (2, pure (Just "unknown")), (2, pure (Just "down")), (1, pure (Just "dormant")), (1, pure Nothing)]
   nums <- forM inProc $ \_ -> vectorOf 16 (frequency [(3, choose (0, 100000)), (1, choose (0, 2 ^ (40 :: Int)))] :: Gen Integer)
   tight <- forM inProc $ \_ -> frequency [(3, pure False), (1, pure True)]
-  let header =
-        [ "Inter-|   Receive                                                |  Transmit"
-        , " face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed"
-        ]
-      devLine n xs t = replicate (max 0 (6 - length n)) ' ' ++ n ++ ":" ++ (if t then "" else " ") ++ unwords (map show xs)
-      procText = unlines (header ++ zipWith3 devLine inProc nums tight)
+  let procText = netDevText (zip3 inProc nums tight)
   own <- gNetOwn
   args <- (++) <$> gCommon netFields <*> pure (if null own then [] else "--" : own)
   dev <- elements netNames
