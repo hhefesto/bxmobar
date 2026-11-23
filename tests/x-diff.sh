@@ -35,7 +35,7 @@ fc-cache $FONTS > /dev/null 2>&1 || true
 # standard input; the screen, the window's geometry and properties
 shot() {
   local bar=$1 c=$2 name=$3
-  ( cd $c; exec $bar config < <(cat line; sleep 9) > $name.log 2>&1 ) &
+  ( cd $c; exec $bar ${(f)"$(<args)"} config < <(cat line; sleep 9) > $name.log 2>&1 ) &
   local pid=$!
   sleep 1.8
   xwd -root -silent | magick xwd:- $c/$name.png

@@ -33,6 +33,8 @@ import ./Win.bend as W
 import ./Draw.bend as Dr
 import ./X.bend as X
 import ./Strip.bend as Sp
+import ./Opts.bend as O
+import ./GetOpt.bend as G
 
 # Time ---------------------------------------------------------------------------------
 
@@ -882,26 +884,6 @@ def config.file() -> IO(Maybe<&2, String>):
     x : Maybe<&2, String> <- env("XDG_CONFIG_HOME")
     config.in(e, or.str(h, ""), x)
 
-# the command line: -T, --text (at Plain) and a configuration file
-def is.text.flag(+a: String) -> Bool:
-  C.in.list(a, ["-T", "-TPlain", "--text", "--text=Plain"])
-
-def cl.files(xs: List<&2, String>) -> List<&2, String>:
-  match xs:
-    case Nil{}:
-      Nil{}
-    case Con{+x, rest}:
-      +more = cl.files(rest)
-      Bool.pick(List<&2, String>, H.first.is(x, 45), more, x <> more)
-
-def cl.bad(xs: List<&2, String>) -> List<&2, String>:
-  match xs:
-    case Nil{}:
-      Nil{}
-    case Con{+x, rest}:
-      +more = cl.bad(rest)
-      Bool.pick(List<&2, String>, Bool.and(H.first.is(x, 45), Bool.not(is.text.flag(x))), x <> more, more)
-
 def tof.plain(t: C.TOF) -> Bool:
   match t:
     case C.Plain{}:
@@ -1320,53 +1302,72 @@ def bar.plain(c: C.Config) -> Bool:
     case C.Config{_, _, _, _, _, _, _, _, tof, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _}:
       tof.plain(tof)
 
-# the bar from a config: text (-T, at Plain; or the config's textOutput,
-# at its format) or the X11 window
-def bar(+c: C.Config, +text: Bool) -> IO(Unit):
-  H.Bool.if(IO(Unit), text, _ => bar.go(True{}, bar.fg(c), bar.parts(c)), _ => H.Bool.if(IO(Unit), bar.text(c), _ => bar.go(bar.plain(c), bar.fg(c), bar.parts(c)), _ => x.bar(c, bar.parts(c), bar.counts(c))))
+# the bar from a config: text (the config's textOutput, -T) at its format,
+# or the X11 window
+def bar(+c: C.Config) -> IO(Unit):
+  H.Bool.if(IO(Unit), bar.text(c), _ => bar.go(bar.plain(c), bar.fg(c), bar.parts(c)), _ => x.bar(c, bar.parts(c), bar.counts(c)))
 
-def bar.of(r: C.CR, +path: String, +text: Bool) -> IO(Unit):
+# doOpts' end: the config it made (after what it said), or the run's end
+def bar.done(d: O.Done) -> IO(Unit):
+  match d:
+    case O.DOk{c, said}:
+      do IO<Unit>:
+        Unit <- IO.write(said)
+        bar(c)
+    case O.DExit{+code, out, +err}:
+      do IO<Unit>:
+        Unit <- IO.write(out)
+        H.Bool.if(IO(Unit), String.is_empty(err), _ => IO.die(Unit, code, ""), _ => IO.die(Unit, code, err))
+
+def bar.of(r: C.CR, +path: String, +os: List<&2, G.Opt>) -> IO(Unit):
   match r:
     case C.CROk{c, _}:
-      bar(c, text)
+      bar.done(O.do.opts(c, os))
     case C.CRErr{at}:
       IO.die(Unit, 1, "xmobar-bend: " ++ path ++ ": invalid configuration file, at: " ++ String.take(at, 60n))
 
-def from.file(+path: String, +text: Bool) -> IO(Unit):
+def from.file(+path: String, +os: List<&2, G.Opt>) -> IO(Unit):
   do IO<Unit>:
     k : U32 <- S.kind(path)
     t : String <- S.slurp(path)
-    H.Bool.if(IO(Unit), U32.is_eq(k, 0), _ => IO.die(Unit, 1, path ++ ": file not found"), _ => bar.of(C.parse(t), path, text))
+    H.Bool.if(IO(Unit), U32.is_eq(k, 0), _ => IO.die(Unit, 1, path ++ ": file not found"), _ => bar.of(C.parse(t), path, os))
 
-def from.found(m: Maybe<&2, String>, +text: Bool) -> IO(Unit):
+def from.found(m: Maybe<&2, String>, +os: List<&2, G.Opt>) -> IO(Unit):
   match m:
     case None{}:
-      bar(C.default(), text)
+      bar.done(O.do.opts(C.default(), os))
     case Some{+p}:
-      H.Bool.if(IO(Unit), String.ends_with(p, "xmobar.hs"), _ => IO.die(Unit, 1, "xmobar-bend: " ++ p ++ " is a Haskell configuration, not supported"), _ => from.file(p, text))
+      H.Bool.if(IO(Unit), String.ends_with(p, "xmobar.hs"), _ => IO.die(Unit, 1, "xmobar-bend: " ++ p ++ " is a Haskell configuration, not supported"), _ => from.file(p, os))
 
-def start(bad: List<&2, String>, files: List<&2, String>, +text: Bool) -> IO(Unit):
-  match bad files:
-    case Con{b, _} _:
-      IO.die(Unit, 1, "xmobar-bend: option " ++ b ++ " is not ported (only -T/--text at Plain)")
-    case Nil{} Nil{}:
-      do IO<Unit>:
-        m : Maybe<&2, String> <- config.file()
-        from.found(m, text)
-    case Nil{} Con{p, Nil{}}:
-      from.file(p, text)
-    case Nil{} _:
-      IO.die(Unit, 1, "xmobar-bend: too many arguments")
-
-def any.text(xs: List<&2, String>) -> Bool:
+def shown.strs(xs: List<&2, String>) -> List<&2, String>:
   match xs:
     case Nil{}:
-      False{}
-    case Con{+x, rest}:
-      Bool.or(is.text.flag(x), any.text(rest))
+      Nil{}
+    case Con{x, rest}:
+      H.show.str(x) <> shown.strs(rest)
+
+# xmobarMain: the options; the configuration file (the one argument left,
+# else xmobarConfigFile's), read, then doOpts on it
+def start.files(+os: List<&2, G.Opt>, +files: List<&2, String>) -> IO(Unit):
+  match files:
+    case Nil{}:
+      do IO<Unit>:
+        m : Maybe<&2, String> <- config.file()
+        from.found(m, os)
+    case Con{p, Nil{}}:
+      from.file(p, os)
+    case _:
+      IO.die(Unit, 1, "xmobar-bend: Too many arguments: " ++ H.show.list(shown.strs(files)))
+
+# getOpts: an error ends the run with the usage; -h writes the usage, -V
+# the version, and ends it
+def start.got(g: G.Got) -> IO(Unit):
+  match g:
+    case G.Got{+os, +files, +errs}:
+      H.Bool.if(IO(Unit), Bool.not(List.is_empty(&2, String, errs)), _ => IO.die(Unit, 1, "xmobar-bend: " ++ String.concat(errs) ++ O.usage()), _ => H.Bool.if(IO(Unit), O.has.tag(0, os), _ => IO.write(O.usage()), _ => H.Bool.if(IO(Unit), O.has.tag(3, os), _ => IO.write(O.info()), _ => start.files(os, files))))
 
 def start.of(+xs: List<&2, String>) -> IO(Unit):
-  start(cl.bad(xs), cl.files(xs), any.text(xs))
+  start.got(G.getopt(O.options(), xs))
 
 def main() -> IO(Unit):
   do IO<Unit>:

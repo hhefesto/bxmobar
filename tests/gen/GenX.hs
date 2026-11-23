@@ -169,7 +169,8 @@ gConfig = do
         ++ [field "alpha" (show a) | Just a <- [alpha]]
         ++ [field "dpi" (show (fromIntegral d :: Double)) | Just d <- [dpi]]
         ++ ["  }"]
-  pure (cfg, line, icons)
+  args <- gArgs
+  pure (cfg, line, icons ++ [("args", unlines args)])
 
 main :: IO ()
 main = do
@@ -228,3 +229,20 @@ gIcons = do
     , (3, (\t -> [("i" ++ show i ++ ".xpm", t)]) <$> gXpm)
     , (1, pure [("i" ++ show i ++ ".bad", "not a bitmap\n")])
     ]) [1 .. n]
+
+-- command-line options, each its own argument (one a line in DIR/N/args)
+gArgs :: Gen [String]
+gArgs = fmap concat $ choose (0, 3 :: Int) >>= flip vectorOf (frequency
+  [ (1, pure ["-o"])
+  , (1, pure ["-b"])
+  , (1, pure ["-d"])
+  , (1, (\c -> ["-B", c]) <$> gXColour)
+  , (1, (\c -> ["-F", c]) <$> gColour)
+  , (1, (\f -> ["-f", f]) <$> gFont)
+  , (1, (\f -> ["-N", f]) <$> gFont)
+  , (1, (\n -> ["-x", show n]) <$> choose (0, 2 :: Int))
+  , (1, (\p -> ["-p", p]) <$> elements ["TopW C 50", "BottomH 30", "Static { xpos = 10, ypos = 20, width = 300, height = 25 }", "nonsense"])
+  , (1, (\a -> ["-A", show a]) <$> choose (0, 255 :: Int))
+  , (1, (\d -> ["--dpi=" ++ d]) <$> elements ["72.0", "120", "96.0"])
+  , (1, pure ["--wmname=bar"])
+  ])
