@@ -263,3 +263,43 @@ def shr.sticky.bits(r: QR, +lost: Bool) -> QR:
 def shr.sticky(+a: List<&2, U32>, +n: Nat) -> QR:
   +limbs = Nat.div(n, 16n)
   shr.sticky.bits(divmod(List.drop(&2, U32, a, limbs), pow2.small(Nat.mod(n, 16n))), any.nonzero(List.take(&2, U32, a, limbs)))
+
+# the bits of a limb, highest first
+def limb.bits(n: Nat, +x: U32, acc: List<&2, U32>) -> List<&2, U32>:
+  match n:
+    case 0n:
+      acc
+    case 1n+m:
+      limb.bits(m, U32.shrn(x, 1n), U32.and(x, 1) <> acc)
+
+# a's bits, highest first (16 a limb, leading zeros kept)
+def bits.go(a: List<&2, U32>, acc: List<&2, U32>) -> List<&2, U32>:
+  match a:
+    case Nil{}:
+      acc
+    case Con{x, rest}:
+      bits.go(rest, List.append(&2, U32, limb.bits(16n, x, Nil{}), acc))
+
+def bits(a: List<&2, U32>) -> List<&2, U32>:
+  bits.go(a, Nil{})
+
+type DQ is Data:
+  DQ{q: List<&2, U32>, r: List<&2, U32>}
+
+def dq.step(+b: List<&2, U32>, +bit: U32, d: DQ) -> DQ:
+  match d:
+    case DQ{q, r}:
+      +r2 = add.c(mul.small(r, 2), bit)
+      +q2 = mul.small(q, 2)
+      Bool.pick(DQ, is.le(b, r2), DQ{add.c(q2, 1), sub(r2, b)}, DQ{q2, r2})
+
+def div.go(bs: List<&2, U32>, +b: List<&2, U32>, d: DQ) -> DQ:
+  match bs:
+    case Nil{}:
+      d
+    case Con{bit, rest}:
+      div.go(rest, b, dq.step(b, bit, d))
+
+# a divided by b (b > 0), schoolbook in base 2: quotient and remainder
+def divmod.big(a: List<&2, U32>, +b: List<&2, U32>) -> DQ:
+  div.go(bits(a), b, DQ{Nil{}, Nil{}})

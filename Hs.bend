@@ -315,3 +315,17 @@ def int.fin(m: Maybe<&2, NR>) -> Maybe<&2, U32>:
 # the value modulo 2^32 (xmobar's numbers fit)
 def read.int(+s: String) -> Maybe<&2, U32>:
   int.fin(int.expr(Nat.add(String.length(s), 1n), s))
+
+def drop.last.empty(xs: List<&2, String>) -> List<&2, String>:
+  match xs:
+    case Nil{}:
+      Nil{}
+    case Con{+x, Nil{}}:
+      Bool.pick(List<&2, String>, String.is_empty(x), Nil{}, [x])
+    case Con{x, rest}:
+      x <> drop.last.empty(rest)
+
+# Data.List's lines (ByteString's too): no last empty line after a final
+# newline
+def lines(s: String) -> List<&2, String>:
+  drop.last.empty(String.split(s, '\n'))

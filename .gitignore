@@ -2,3 +2,4 @@ result
 tests/TemplateCases.bend
 tests/FloatCases.bend
 tests/MonitorCases.bend
+tests/MonCases.bend

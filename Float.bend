@@ -359,3 +359,166 @@ def of.big(+a: List<&2, U32>) -> F32:
   +n = bitlen(a)
   H.Bool.if(F32, Nat.is_le(n, 32n), _ => U32.to_f32(B.to.u32.or0(a)), _ => of.big.top(B.shr.sticky(a, Nat.sub(n, 32n)), Nat.sub(n, 32n)))
 
+
+# fromRational at Float ------------------------------------------------------------------
+
+def nat.u32(+u: U32) -> Nat:
+  U32.to_nat(u)
+
+# floor(n 2^s / d) and its remainder, s an Int32
+def scaled(+n: List<&2, U32>, +d: List<&2, U32>, +s: U32) -> B.DQ:
+  H.Bool.if(B.DQ, i.ge(s, 0), _ => B.divmod.big(B.shl(i.nat(s), n), d), _ => B.divmod.big(n, B.shl(i.nat(i.neg(s)), d)))
+
+def den.of(+d: List<&2, U32>, +s: U32) -> List<&2, U32>:
+  H.Bool.if(List<&2, U32>, i.ge(s, 0), _ => d, _ => B.shl(i.nat(i.neg(s)), d))
+
+# q rounded half to even by its remainder r of den
+def round.q(+q: U32, +r: List<&2, U32>, +den: List<&2, U32>) -> U32:
+  +c = B.cmp(B.shl(1n, r), den)
+  H.Bool.if(U32, Cmp.is_gt(c), _ => U32.add(q, 1), _ => H.Bool.if(U32, Bool.and(Cmp.is_eq(c), U32.is_eq(U32.and(q, 1), 1)), _ => U32.add(q, 1), _ => q))
+
+# a normal Float: q in [2^23, 2^24] (2^24 after rounding up), e its exponent
+def normal.bits(+q: U32, +e: U32) -> U32:
+  +q2 = Bool.pick(U32, U32.is_eq(q, 16777216), 8388608, q)
+  +e2 = Bool.pick(U32, U32.is_eq(q, 16777216), U32.add(e, 1), e)
+  H.Bool.if(U32, i.lt(127, e2), _ => 2139095040, _ => U32.or(U32.shln(U32.add(e2, 127), 23n), U32.sub(q2, 8388608)))
+
+def dq.q(d: B.DQ) -> U32:
+  match d:
+    case B.DQ{q, _}:
+      B.to.u32.or0(q)
+
+def dq.r(d: B.DQ) -> List<&2, U32>:
+  match d:
+    case B.DQ{_, r}:
+      r
+
+def of.ratio.normal(t: B.DQ, +den: List<&2, U32>, +e: U32) -> F32:
+  match t:
+    case B.DQ{q, r}:
+      of.bits(normal.bits(round.q(B.to.u32.or0(q), r, den), e))
+
+def of.ratio.denormal(+n: List<&2, U32>, +d: List<&2, U32>) -> F32:
+  +t = scaled(n, d, 149)
+  of.bits(round.q(dq.q(t), dq.r(t), d))
+
+def of.ratio.go(+n: List<&2, U32>, +d: List<&2, U32>, +s0: U32) -> F32:
+  +big = U32.is_ge(dq.q(scaled(n, d, s0)), 16777216)
+  +s = Bool.pick(U32, big, U32.sub(s0, 1), s0)
+  +e = U32.sub(23, s)
+  H.Bool.if(F32, i.lt(e, i.neg(126)), _ => of.ratio.denormal(n, d), _ => of.ratio.normal(scaled(n, d, s), den.of(d, s), e))
+
+# the nearest Float to n / d (n >= 0, d > 0), ties to even, denormals and
+# overflow (Infinity) as fromRational has them
+def of.ratio(+n: List<&2, U32>, +d: List<&2, U32>) -> F32:
+  H.Bool.if(F32, B.is.zero(n), _ => 0.0, _ => of.ratio.go(n, d, U32.sub(U32.add(24, U32.from_nat(bitlen(d))), U32.from_nat(bitlen(n)))))
+
+# read at Float ------------------------------------------------------------------------
+
+type Num is Data:
+  Num{digits: String, frac: String, exp: Maybe<&2, U32>, rest: String}
+  NoNum{}
+
+def digits.len(s: String) -> Nat:
+  H.digits.len(1, s)
+
+# e or E, a sign, digits: the exponent (an Int32) and what follows
+type Ex is Data:
+  Ex{e: Maybe<&2, U32>, rest: String}
+
+def exp.part(+s: String) -> Ex:
+  +t = H.tail(s)
+  +neg = H.first.is(t, 45)
+  +sign = Bool.or(neg, H.first.is(t, 43))
+  +u = Bool.pick(String, sign, H.tail(t), t)
+  +n = digits.len(u)
+  H.Bool.if(Ex, Bool.and(Bool.or(H.first.is(s, 101), H.first.is(s, 69)), Nat.is_gt(n, 0n)), _ => Ex{Some{Bool.pick(U32, neg, i.neg(H.digits.val(10, String.take(u, n), 0)), H.digits.val(10, String.take(u, n), 0))}, String.drop(u, n)}, _ => Ex{None{}, s})
+
+def num.of(+d: String, +f: String, x: Ex) -> Num:
+  match x:
+    case Ex{e, rest}:
+      Num{d, f, e, rest}
+
+# a decimal number token: digits, maybe . and digits, maybe an exponent
+def num.dec(+s: String) -> Num:
+  +n = digits.len(s)
+  +r = String.drop(s, n)
+  +m = digits.len(H.tail(r))
+  +hasfrac = Bool.and(H.first.is(r, 46), Nat.is_gt(m, 0n))
+  +r2 = Bool.pick(String, hasfrac, String.drop(H.tail(r), m), r)
+  H.Bool.if(Num, Nat.is_eq(n, 0n), _ => NoNum{}, _ => num.of(String.take(s, n), Bool.pick(String, hasfrac, String.take(H.tail(r), m), ""), exp.part(r2)))
+
+# the value of a number token as a Float (numberToRangedRational, then
+# fromRational): an exponent past the range answers Infinity or 0
+def num.value(+d: String, +f: String, +x: U32) -> F32:
+  +all = B.dec.big(d ++ f)
+  +k = U32.sub(x, U32.from_nat(String.length(f)))
+  +lead = U32.add(U32.from_nat(String.length(d)), x)
+  H.Bool.if(F32, B.is.zero(all), _ => 0.0, _ => H.Bool.if(F32, i.lt(131, lead), _ => of.bits(2139095040), _ => H.Bool.if(F32, i.lt(lead, i.neg(140)), _ => 0.0, _ => H.Bool.if(F32, i.ge(k, 0), _ => of.big(B.mul.big(all, B.pow10(i.nat(k)))), _ => of.ratio(all, B.pow10(i.nat(i.neg(k))))))))
+
+type FR is Data:
+  FR{v: F32, rest: String}
+
+def fr.neg(m: Maybe<&2, FR>) -> Maybe<&2, FR>:
+  match m:
+    case Some{FR{v, r}}:
+      Some{FR{F32.neg(v), r}}
+    case None{}:
+      None{}
+
+def int.or0(m: Maybe<&2, U32>) -> U32:
+  match m:
+    case Some{x}:
+      x
+    case None{}:
+      0
+
+def num.fin(n: Num) -> Maybe<&2, FR>:
+  match n:
+    case Num{+d, +f, e, +r}:
+      Bool.pick(Maybe<&2, FR>, H.number.ends(r), Some{FR{num.value(d, f, int.or0(e)), r}}, None{})
+    case NoNum{}:
+      None{}
+
+def nr.float(m: Maybe<&2, H.NR>) -> Maybe<&2, FR>:
+  match m:
+    case Some{H.NR{v, r}}:
+      Some{FR{U32.to_f32(v), r}}
+    case None{}:
+      None{}
+
+# one atom: a number (hexadecimal and octal as Int reads them), NaN,
+# Infinity
+def atom(+s: String) -> Maybe<&2, FR>:
+  +x = H.char0(H.tail(s))
+  H.Bool.if(Maybe<&2, FR>, Bool.and(H.first.is(s, 48), Bool.or(U32.is_eq(U32.or(x, 32), 120), U32.is_eq(U32.or(x, 32), 111))), _ => nr.float(H.number(s)), _ => H.Bool.if(Maybe<&2, FR>, Bool.and(String.starts_with(s, "NaN"), H.number.ends(String.drop(s, 3n))), _ => Some{FR{of.bits(2143289344), String.drop(s, 3n)}}, _ => H.Bool.if(Maybe<&2, FR>, Bool.and(String.starts_with(s, "Infinity"), H.number.ends(String.drop(s, 8n))), _ => Some{FR{of.bits(2139095040), String.drop(s, 8n)}}, _ => num.fin(num.dec(s)))))
+
+def close.paren.go(+v: F32, +r: String) -> Maybe<&2, FR>:
+  Bool.pick(Maybe<&2, FR>, H.first.is(r, 41), Some{FR{v, H.tail(r)}}, None{})
+
+def close.paren(m: Maybe<&2, FR>) -> Maybe<&2, FR>:
+  match m:
+    case Some{FR{v, r}}:
+      close.paren.go(v, H.drop.space(r))
+    case None{}:
+      None{}
+
+def expr(fuel: Nat, +s: String) -> Maybe<&2, FR>:
+  match fuel:
+    case 0n:
+      None{}
+    case 1n+f:
+      +t = H.drop.space(s)
+      H.Bool.if(Maybe<&2, FR>, H.first.is(t, 40), _ => close.paren(expr(f, H.tail(t))), _ => H.Bool.if(Maybe<&2, FR>, H.first.is(t, 45), _ => fr.neg(atom(H.drop.space(H.tail(t)))), _ => atom(t)))
+
+def read.fin(m: Maybe<&2, FR>) -> Maybe<&2, F32>:
+  match m:
+    case Some{FR{v, r}}:
+      Bool.pick(Maybe<&2, F32>, String.is_empty(H.drop.space(r)), Some{v}, None{})
+    case None{}:
+      None{}
+
+# read at Float: None where Haskell's read fails
+def read(+s: String) -> Maybe<&2, F32>:
+  read.fin(expr(Nat.add(String.length(s), 1n), s))
+

@@ -60,6 +60,7 @@
         pkgs.haskellPackages.ghcWithPackages (p: [
           (xmobarLibFor pkgs)
           p.QuickCheck
+          p.temporary
           p.X11
           p.parsec
           p.mtl

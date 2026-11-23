@@ -45,12 +45,41 @@ def got.i(+n: String, +b: U32) -> Got:
   +g = F.bits(F.of.big(B.dec.big(n)))
   Got{U32.is_eq(g, b), "integer " ++ n ++ "\n  ghc:  " ++ H.show.u32(b) ++ "\n  bend: " ++ H.show.u32(g) ++ "\n"}
 
+def bits.or(m: Maybe<&2, F32>) -> Maybe<&2, U32>:
+  match m:
+    case Some{+v}:
+      Some{Bool.pick(U32, F.is.nan(v), 2143289344, F.bits(v))}
+    case None{}:
+      None{}
+
+def show.m(m: Maybe<&2, U32>) -> String:
+  match m:
+    case Some{v}:
+      H.show.u32(v)
+    case None{}:
+      "None"
+
+def same.m(a: Maybe<&2, U32>, b: Maybe<&2, U32>) -> Bool:
+  match a b:
+    case Some{x} Some{y}:
+      U32.is_eq(x, y)
+    case None{} None{}:
+      True{}
+    case _ _:
+      False{}
+
+def got.r(+s: String, +b: Maybe<&2, U32>) -> Got:
+  +g = bits.or(F.read(s))
+  Got{same.m(g, b), "read " ++ H.show.str(s) ++ "\n  ghc:  " ++ show.m(b) ++ "\n  bend: " ++ show.m(g) ++ "\n"}
+
 def got(c: C.Case) -> Got:
   match c:
     case C.FCase{b, fx, sh, rd}:
       got.f(b, fx, sh, rd)
     case C.ICase{n, b}:
       got.i(n, b)
+    case C.RCase{s, b}:
+      got.r(s, b)
 
 def tally(g: Got, +same: Nat, +differ: Nat, +report: String, k: Nat -> Nat -> String -> String) -> String:
   match g:

@@ -542,3 +542,34 @@ def run.args(a: Args, k: C -> List<&2, String> -> String) -> String:
 def run(+argv: List<&2, String>, m: MC, k: C -> List<&2, String> -> String) -> String:
   run.args(args(argv, m), k)
 
+
+# the same config with another export list (MultiCpu's and MultiCoreTemp's
+# are infinite in Haskell: as many names as there are values)
+def with.export(c: C, e: List<&2, String>) -> C:
+  match c:
+    case C{nc, low, lc, high, hc, t, _, pp, dd, mn, mx, ell, pc, pr, bb, bf, bw, su, na, mt, mtell}:
+      C{nc, low, lc, high, hc, t, e, pp, dd, mn, mx, ell, pc, pr, bb, bf, bw, su, na, mt, mtell}
+
+def c.dd(c: C) -> U32:
+  match c:
+    case C{_, _, _, _, _, _, _, _, dd, _, _, _, _, _, _, _, _, _, _, _, _}:
+      dd
+
+def c.na(c: C) -> String:
+  match c:
+    case C{_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, na, _, _}:
+      na
+
+def c.suffix(c: C) -> Bool:
+  match c:
+    case C{_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, su, _, _, _}:
+      su
+
+def with.template(c: C, t: String) -> C:
+  match c:
+    case C{nc, low, lc, high, hc, _, e, pp, dd, mn, mx, ell, pc, pr, bb, bf, bw, su, na, mt, mtell}:
+      C{nc, low, lc, high, hc, t, e, pp, dd, mn, mx, ell, pc, pr, bb, bf, bw, su, na, mt, mtell}
+
+# parseOptsWith's failure: ioError (userError (concat errs)), as runM shows it
+def user.error(+es: List<&2, String>) -> String:
+  "error: user error (" ++ String.concat(es) ++ ")"
