@@ -212,3 +212,106 @@ def words.go(fuel: Nat, +s: String) -> List<&2, String>:
 
 def words(+s: String) -> List<&2, String>:
   words.go(Nat.add(String.length(s), 1n), s)
+
+# read at Int ---------------------------------------------------------------------
+
+def drop.space(+s: String) -> String:
+  String.drop(s, space.len(True{}, s))
+
+def first.is(s: String, +u: U32) -> Bool:
+  match s:
+    case SCon{c, _}:
+      c.is(c, u)
+    case SNil{}:
+      False{}
+
+def tail(s: String) -> String:
+  match s:
+    case SCon{_, r}:
+      r
+    case SNil{}:
+      ""
+
+# how many characters of s are digits of a base (which: 0 octal, 1
+# decimal, 2 hexadecimal)
+def digits.len(+which: U32, s: String) -> Nat:
+  match s:
+    case SNil{}:
+      0n
+    case SCon{c, rest}:
+      Bool.if(Nat, digit.ok(which, Char.to_u32(c)), _ => 1n+digits.len(which, rest), _ => 0n)
+
+type NR is Data:
+  NR{v: U32, rest: String}
+
+def nr.neg(m: Maybe<&2, NR>) -> Maybe<&2, NR>:
+  match m:
+    case Some{NR{v, r}}:
+      Some{NR{neg(v), r}}
+    case None{}:
+      None{}
+
+# a number token at the start of s (no sign): 0x.. 0o.. or decimal; what
+# follows must end the token (space, a parenthesis, the end), else the
+# lexer reads more (a fraction, an exponent, a name) and Int's read fails
+def number.ends(s: String) -> Bool:
+  match s:
+    case SNil{}:
+      True{}
+    case SCon{c, _}:
+      +u = Char.to_u32(c)
+      Bool.or(is.space(u), Bool.or(U32.is_eq(u, 40), U32.is_eq(u, 41)))
+
+def number.with(+which: U32, +base: U32, +s: String) -> Maybe<&2, NR>:
+  +n = digits.len(which, s)
+  +r = String.drop(s, n)
+  Bool.pick(Maybe<&2, NR>, Bool.and(Nat.is_gt(n, 0n), number.ends(r)), Some{NR{digits.val(base, String.take(s, n), 0), r}}, None{})
+
+def char0(s: String) -> U32:
+  match s:
+    case SCon{c, _}:
+      Char.to_u32(c)
+    case SNil{}:
+      0
+
+def number.hex(+s: String) -> Maybe<&2, NR>:
+  number.with(2, 16, s)
+
+def number.oct(+s: String) -> Maybe<&2, NR>:
+  number.with(0, 8, s)
+
+def number(+s: String) -> Maybe<&2, NR>:
+  +t = tail(s)
+  +x = char0(t)
+  Bool.if(Maybe<&2, NR>, Bool.and(first.is(s, 48), Bool.or(U32.is_eq(x, 120), U32.is_eq(x, 88))), _ => number.hex(String.drop(s, 2n)), _ => Bool.if(Maybe<&2, NR>, Bool.and(first.is(s, 48), Bool.or(U32.is_eq(x, 111), U32.is_eq(x, 79))), _ => number.oct(String.drop(s, 2n)), _ => number.with(1, 10, s)))
+
+def close.paren.go(+v: U32, +r: String) -> Maybe<&2, NR>:
+  Bool.pick(Maybe<&2, NR>, first.is(r, 41), Some{NR{v, tail(r)}}, None{})
+
+def close.paren(m: Maybe<&2, NR>) -> Maybe<&2, NR>:
+  match m:
+    case Some{NR{v, r}}:
+      close.paren.go(v, drop.space(r))
+    case None{}:
+      None{}
+
+# parens (number, or - and a number), spaces between tokens
+def int.expr(fuel: Nat, +s: String) -> Maybe<&2, NR>:
+  match fuel:
+    case 0n:
+      None{}
+    case 1n+f:
+      +t = drop.space(s)
+      Bool.if(Maybe<&2, NR>, first.is(t, 40), _ => close.paren(int.expr(f, tail(t))), _ => Bool.if(Maybe<&2, NR>, first.is(t, 45), _ => nr.neg(number(drop.space(tail(t)))), _ => number(t)))
+
+def int.fin(m: Maybe<&2, NR>) -> Maybe<&2, U32>:
+  match m:
+    case Some{NR{v, r}}:
+      Bool.pick(Maybe<&2, U32>, String.is_empty(drop.space(r)), Some{v}, None{})
+    case None{}:
+      None{}
+
+# read at Int: None where Haskell's read fails (Prelude.read: no parse);
+# the value modulo 2^32 (xmobar's numbers fit)
+def read.int(+s: String) -> Maybe<&2, U32>:
+  int.fin(int.expr(Nat.add(String.length(s), 1n), s))
