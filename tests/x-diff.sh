@@ -35,7 +35,7 @@ fc-cache $FONTS > /dev/null 2>&1 || true
 # standard input; the screen, the window's geometry and properties
 shot() {
   local bar=$1 c=$2 name=$3
-  ( cd $c; ( cat line; sleep 4 ) | $bar config > $name.log 2>&1 ) &
+  ( cd $c; exec $bar config < <(cat line; sleep 9) > $name.log 2>&1 ) &
   local pid=$!
   sleep 1.8
   xwd -root -silent | magick xwd:- $c/$name.png
@@ -56,12 +56,21 @@ shot() {
     for ((j = 0; j < 16; j++)); do
       xdotool mousemove $((wx + j * ww / 16 + 2)) $((wy + wh / 2)) click 1 click 3
     done
-    sleep 0.6
+    # the actions run in the background: wait until the file stays the
+    # same for half a second (at most 5 s)
+    local before=-1 now=0 t=0
+    while (( t < 10 )); do
+      sleep 0.5
+      now=0
+      [[ -f $c/clicks ]] && now=$(wc -c < $c/clicks)
+      (( now == before )) && break
+      before=$now
+      (( t++ ))
+    done
   fi
   sort $c/clicks > $c/$name.clicks 2> /dev/null
   rm -f $c/clicks
   kill $pid 2> /dev/null
-  pkill -P $pid 2> /dev/null
   wait $pid 2> /dev/null
   sleep 0.2
 }
