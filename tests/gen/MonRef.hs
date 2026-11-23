@@ -26,6 +26,8 @@ import qualified Data.ByteString.Char8 as B
 import System.Posix.IO (OpenFileFlags (..), OpenMode (WriteOnly), closeFd, defaultFileFlags, fdWrite, openFd)
 import Xmobar.Plugins.Monitors (Monitors)
 import Xmobar.Run.Exec (start)
+import Xmobar.App.Config (defaultConfig)
+import Xmobar.Text.Output (format)
 
 -- each file of a step written over the file of the same name in CUR (the
 -- same inode, so what bwrap bound sees it), through a bare descriptor:
@@ -55,6 +57,10 @@ main = do
   -- FILL=path:bytes,...: files of that many bytes written first (in a
   -- tmpfs bwrap made), and each path's statfs printed first, as DiskU
   -- reads it: total, available and used bytes
+  -- PLAIN=PREFIX: each output after PREFIX, as xmobar -T writes the line
+  -- (Text.Output.format at defaultConfig, Plain), for tests/gen/GenE2E.hs
+  plain <- lookupEnv "PLAIN"
+  let shown o = maybe o (\p -> format defaultConfig (p ++ o)) plain
   fill <- maybe [] (splitOn ',') <$> lookupEnv "FILL"
   forM_ fill $ \pf -> do
     let (p, n) = break (== ':') pf
@@ -71,6 +77,6 @@ main = do
   foldM_ (\prev (i, s) -> do
     when (i > 0) (install cur s)
     o <- next prev
-    print o
+    print (shown o)
     hFlush stdout
     pure o) "" (zip [0 :: Int ..] steps)

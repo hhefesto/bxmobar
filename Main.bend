@@ -382,22 +382,40 @@ def core.labels(ps: List<&2, String>) -> IO(List<&2, String>):
         +more : List<&2, String> <- core.labels(rest)
         IO.pure(List<&2, String>, Bool.pick(List<&2, String>, N.core.label(t), N.label.input(p) <> more, more))
 
-def temp.cons(m: Maybe<&2, F32>, xs: List<&2, F32>) -> List<&2, F32>:
-  match m:
-    case Some{x}:
-      x <> xs
-    case None{}:
-      xs
+# the files' texts, or the first one's openFile error (GHC's text)
+type Texts is Data:
+  TxOk{ts: List<&2, String>}
+  TxErr{e: String}
 
-def temps(ps: List<&2, String>) -> IO(List<&2, F32>):
+def open.err(+k: U32, +p: String) -> Maybe<&2, String>:
+  Bool.pick(Maybe<&2, String>, U32.is_eq(k, 0), Some{p ++ ": openFile: does not exist (No such file or directory)"}, Bool.pick(Maybe<&2, String>, U32.is_eq(k, 2), Some{p ++ ": openFile: inappropriate type (is a directory)"}, None{}))
+
+def texts.cons(m: Maybe<&2, String>, t: String, more: Texts) -> Texts:
+  match m more:
+    case Some{e} _:
+      TxErr{e}
+    case None{} TxOk{ts}:
+      TxOk{t <> ts}
+    case None{} TxErr{e}:
+      TxErr{e}
+
+def texts(ps: List<&2, String>) -> IO(Texts):
   match ps:
     case Nil{}:
-      IO.pure(List<&2, F32>, Nil{})
+      IO.pure(Texts, TxOk{Nil{}})
     case Con{+p, rest}:
-      do IO<List<&2, F32>>:
+      do IO<Texts>:
+        k : U32 <- S.kind(p)
         t : String <- S.slurp(p)
-        more : List<&2, F32> <- temps(rest)
-        IO.pure(List<&2, F32>, temp.cons(N.core.temp(t), more))
+        more : Texts <- texts(rest)
+        IO.pure(Texts, texts.cons(open.err(k, p), t, more))
+
+def temps.of(x: Texts) -> N.Temps:
+  match x:
+    case TxOk{ts}:
+      N.core.temps(ts)
+    case TxErr{e}:
+      N.TempsErr{e}
 
 def core.paths(m: Maybe<&2, String>) -> IO(List<&2, String>):
   match m:
@@ -492,14 +510,17 @@ def run.disku(+disks: List<&2, N.DT>, +args: List<&2, String>) -> IO(Ran):
     ms : List<&2, N.MS> <- disk.stats(N.mounted(dt.names(disks), ds))
     ran(M.run(args, N.disku.config(), c => r => N.disku.run(c, r, disks, ms)), KNone{})
 
+def ran.ct(+args: List<&2, String>, +ts: N.Temps) -> IO(Ran):
+  ran(M.run(args, N.coretemp.config(), c => r => N.coretemp.run.or(c, r, ts)), KNone{})
+
 def run.coretemp(+args: List<&2, String>) -> IO(Ran):
   do IO<Ran>:
     ps : List<&2, String> <- core.paths(N.ct.path(rest.of(M.args(args, N.coretemp.config()))))
     ls : List<&2, String> <- labels(ps)
     fs : List<&2, String> <- keep.kind(1, ls)
     cs : List<&2, String> <- core.labels(fs)
-    ts : List<&2, F32> <- temps(cs)
-    ran(M.run(args, N.coretemp.config(), c => r => N.coretemp.run(c, r, ts)), KNone{})
+    x : Texts <- texts(cs)
+    ran.ct(args, temps.of(x))
 
 def run.mon(+n: String, +v: R.HV, +k: Keep) -> IO(Ran):
   +args = mon.args(v)

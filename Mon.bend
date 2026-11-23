@@ -671,12 +671,17 @@ def filter.refs(d: Maybe<&2, List<&2, String>>, +xs: List<&2, Named>) -> List<&2
       +kept = keep.named(only, xs)
       Bool.pick(List<&2, Named>, List.is_empty(&2, Named, kept), xs, kept)
 
+# What GHC 9.10 (the GHC xmobar 0.50 is built with) shows for maximum []: an
+# ErrorCall with its call stack, through Foldable's maximum on lists
+def ghc.maximum.empty() -> String:
+  "Prelude.maximum: empty list\nCallStack (from HasCallStack):\n  error, called at libraries/ghc-internal/src/GHC/Internal/List.hs:2030:3 in ghc-internal:GHC.Internal.List\n  errorEmptyList, called at libraries/ghc-internal/src/GHC/Internal/List.hs:824:28 in ghc-internal:GHC.Internal.List\n  maximum, called at libraries/ghc-internal/src/GHC/Internal/Data/Foldable.hs:691:15 in ghc-internal:GHC.Internal.Data.Foldable"
+
 def dyn.pick(+c: M.C, +k: NetOpts, m: Maybe<&2, Rate>) -> String:
   match m:
     case Some{r}:
       net.print(c, k, r)
     case None{}:
-      "error: Prelude.maximum: empty list"
+      "error: " ++ ghc.maximum.empty()
 
 def net.opts.devs(k: NetOpts) -> Maybe<&2, List<&2, String>>:
   match k:
@@ -928,7 +933,7 @@ def ct.format(+c: M.C, k: CTOpts, +ts: List<&2, F32>) -> String:
       +avg = (sum.f(ts, 0.0) / U32.to_f32(U32.from_nat(List.length(&2, F32, ts))) : F32)
       M.template(M.with.export(c, List.append(&2, String, ["max", "maxpc", "maxbar", "maxvbar", "maxipat", "avg", "avgpc", "avgbar", "avgvbar", "avgipat"], ct.names.go(List.length(&2, F32, ts), 0n))), List.concat(&2, String, [ct.side(c, mp, mxc, ((mxc - mn : F32) / dom : F32)), ct.side(c, ap, avg, ((avg - mn : F32) / dom : F32)), temps.colors(c, ts)]))
     case _ Nil{}:
-      "error: Prelude.maximum: empty list"
+      "error: " ++ ghc.maximum.empty()
     case _ _:
       "error: Prelude.read: no parse"
 
@@ -959,3 +964,51 @@ def ct.path(+argv: List<&2, String>) -> Maybe<&2, String>:
 def coretemp.run(+c: M.C, +argv: List<&2, String>, +ts: List<&2, F32>) -> String:
   ct.go(c, own(coretemp.options(), argv), ts)
 
+
+# The cores' temperatures as cTData reads them: a file that does not open
+# fails the run (openFile's error, before any is read as a number), then a
+# text that does not read as a number fails it (read's error, when formatCT
+# forces it)
+type Temps is Data:
+  TempsOk{ts: List<&2, F32>}
+  TempsErr{e: String}
+
+def temps.cons(m: Maybe<&2, F32>, r: Maybe<&2, List<&2, F32>>) -> Maybe<&2, List<&2, F32>>:
+  match m r:
+    case Some{x} Some{xs}:
+      Some{x <> xs}
+    case _ _:
+      None{}
+
+def core.temps.go(xs: List<&2, String>) -> Maybe<&2, List<&2, F32>>:
+  match xs:
+    case Nil{}:
+      Some{Nil{}}
+    case Con{x, rest}:
+      temps.cons(core.temp(x), core.temps.go(rest))
+
+def core.temps.of(m: Maybe<&2, List<&2, F32>>) -> Temps:
+  match m:
+    case Some{ts}:
+      TempsOk{ts}
+    case None{}:
+      TempsErr{"Prelude.read: no parse"}
+
+def core.temps(xs: List<&2, String>) -> Temps:
+  core.temps.of(core.temps.go(xs))
+
+def ct.err(o: Own, +e: String) -> String:
+  match o:
+    case Own{_}:
+      "error: " ++ e
+    case OwnErr{t}:
+      t
+
+# runCT on what was read: its own options' error first, as parseOptsWith
+# fails before parseCT reads
+def coretemp.run.or(+c: M.C, +argv: List<&2, String>, r: Temps) -> String:
+  match r:
+    case TempsOk{+ts}:
+      coretemp.run(c, argv, ts)
+    case TempsErr{+e}:
+      ct.err(own(coretemp.options(), argv), e)
