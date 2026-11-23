@@ -32,6 +32,7 @@ import ./Sys.bend as S
 import ./Win.bend as W
 import ./Draw.bend as Dr
 import ./X.bend as X
+import ./Strip.bend as Sp
 
 # Time ---------------------------------------------------------------------------------
 
@@ -132,13 +133,9 @@ def msg.or(m: Maybe<&2, String>, +d: String) -> String:
       d
 
 # UnsafeStdinReader shows each line as it is; StdinReader first takes its
-# actions out (stripActions, a POSIX regex not ported yet)
+# actions out (stripActions, Strip.bend)
 def stdin.part(u: Bool) -> Part:
-  match u:
-    case True{}:
-      Part{JStdin{True{}}, 0, "", "", "Updating...", never()}
-    case False{}:
-      Part{JNo{"xmobar-bend: StdinReader is not ported (UnsafeStdinReader is)"}, 0, "", "", "Updating...", 0}
+  Part{JStdin{u}, 0, "", "", "Updating...", never()}
 
 # the job of a part's command (combine's default: Com alias [] [] 10)
 def job.of(m: Maybe<&2, C.Run>, +com: String) -> Part:
@@ -712,8 +709,8 @@ def feed(ps: List<&2, Part>, +l: String) -> List<&2, Part>:
   match ps:
     case Nil{}:
       Nil{}
-    case Con{Part{JStdin{u}, +r, +b, +a, _, +d}, rest}:
-      Part{JStdin{u}, r, b, a, l, d} <> feed(rest, l)
+    case Con{Part{JStdin{+u}, +r, +b, +a, _, +d}, rest}:
+      Part{JStdin{u}, r, b, a, Bool.pick(String, u, l, Sp.strip(l)), d} <> feed(rest, l)
     case Con{p, rest}:
       p <> feed(rest, l)
 

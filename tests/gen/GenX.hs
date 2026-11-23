@@ -1,8 +1,8 @@
 -- The X11 bar's differential cases: random configurations (position,
 -- border, fonts and their offsets, colours, alpha, dpi) and random
 -- templates (text, <fc>, <box>, <hspace>, <fn>, <action>, the three
--- sections, texts long enough to be cut) with an UnsafeStdinReader whose
--- line is random markup too. tests/x-diff.sh runs xmobar 0.50 and
+-- sections, texts long enough to be cut) with an UnsafeStdinReader or a
+-- StdinReader (its actions stripped) whose line is random markup too. tests/x-diff.sh runs xmobar 0.50 and
 -- xmobar-bend on each, in Xvfb, and compares the screens pixel by pixel
 -- and the windows' geometry and properties.
 --
@@ -137,8 +137,9 @@ gConfig = do
   c <- frequency [(2, pure ""), (2, gMarkup is 2)]
   r <- frequency [(1, pure ""), (3, gMarkup is 2)]
   slot <- elements [0, 1, 2 :: Int]
+  reader <- elements ["UnsafeStdinReader", "StdinReader"]
   line <- gMarkup is 2
-  let stdin = "%UnsafeStdinReader%"
+  let stdin = "%" ++ reader ++ "%"
       safe = filter (`notElem` "%{}")
       sections = case slot of
         0 -> [safe l ++ stdin, safe c, safe r]
@@ -157,7 +158,7 @@ gConfig = do
         , field "border" border
         , field "borderColor" (q bcol)
         , field "template" (q tpl)
-        , field "commands" "[Run UnsafeStdinReader]"
+        , field "commands" ("[Run " ++ reader ++ "]")
         , field "lowerOnStart" "True"
         , field "overrideRedirect" "True"
         ]
