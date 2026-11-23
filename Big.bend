@@ -303,3 +303,14 @@ def div.go(bs: List<&2, U32>, +b: List<&2, U32>, d: DQ) -> DQ:
 # a divided by b (b > 0), schoolbook in base 2: quotient and remainder
 def divmod.big(a: List<&2, U32>, +b: List<&2, U32>) -> DQ:
   div.go(bits(a), b, DQ{Nil{}, Nil{}})
+
+# digits of a base (8 or 16) as a number
+def based.go(+base: U32, s: String, acc: List<&2, U32>) -> List<&2, U32>:
+  match s:
+    case SNil{}:
+      acc
+    case SCon{c, rest}:
+      based.go(base, rest, add.c(mul.small(acc, base), H.digit.val(Char.to_u32(c))))
+
+def based(+base: U32, s: String) -> List<&2, U32>:
+  based.go(base, s, Nil{})
