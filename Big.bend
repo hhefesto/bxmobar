@@ -210,3 +210,56 @@ def dec.big.go(s: String, acc: List<&2, U32>) -> List<&2, U32>:
 
 def dec.big(s: String) -> List<&2, U32>:
   dec.big.go(s, Nil{})
+
+def shift16(a: List<&2, U32>) -> List<&2, U32>:
+  match a:
+    case Nil{}:
+      Nil{}
+    case Con{x, xs}:
+      0 <> (x <> xs)
+
+# a * b
+def mul.big(+a: List<&2, U32>, b: List<&2, U32>) -> List<&2, U32>:
+  match b:
+    case Nil{}:
+      Nil{}
+    case Con{y, ys}:
+      add(mul.small(a, y), shift16(mul.big(a, ys)))
+
+def or0(m: Maybe<&2, U32>) -> U32:
+  match m:
+    case Some{x}:
+      x
+    case None{}:
+      0
+
+def to.u32.or0(a: List<&2, U32>) -> U32:
+  or0(to.u32(a))
+
+# showsPrec 0 at Int of minus a natural number
+def i.show.neg(+a: List<&2, U32>) -> String:
+  Bool.pick(String, is.zero(a), "0", "-" ++ show(a))
+
+def any.nonzero(xs: List<&2, U32>) -> Bool:
+  match xs:
+    case Nil{}:
+      False{}
+    case Con{x, rest}:
+      Bool.or(U32.is_ne(x, 0), any.nonzero(rest))
+
+def pow2.small(n: Nat) -> U32:
+  match n:
+    case 0n:
+      1
+    case 1n+m:
+      U32.mul(pow2.small(m), 2)
+
+def shr.sticky.bits(r: QR, +lost: Bool) -> QR:
+  match r:
+    case QR{q, +m}:
+      QR{q, Bool.pick(U32, Bool.or(lost, U32.is_ne(m, 0)), 1, 0)}
+
+# a / 2^n, and r 1 if any bit shifted out was set, else 0
+def shr.sticky(+a: List<&2, U32>, +n: Nat) -> QR:
+  +limbs = Nat.div(n, 16n)
+  shr.sticky.bits(divmod(List.drop(&2, U32, a, limbs), pow2.small(Nat.mod(n, 16n))), any.nonzero(List.take(&2, U32, a, limbs)))
