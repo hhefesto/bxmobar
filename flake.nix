@@ -146,6 +146,7 @@
               pkgs.xwd
               pkgs.xwininfo
               pkgs.xprop
+              pkgs.xdotool
               pkgs.imagemagick
               pkgs.fontconfig
               pkgs.procps

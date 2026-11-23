@@ -76,7 +76,7 @@ gItem d = frequency $
   , (1, (\c b o m -> "<fc=" ++ c ++ "," ++ b ++ ":" ++ show o ++ ">" ++ m ++ "</fc>") <$> gColour <*> gColour <*> choose (0, 6 :: Int) <*> gMarkup (d - 1))
   , (2, (\a m -> "<box" ++ a ++ ">" ++ m ++ "</box>") <$> gBoxAttrs <*> gMarkup (d - 1))
   , (1, (\i m -> "<fn=" ++ show i ++ ">" ++ m ++ "</fn>") <$> choose (0, 3 :: Int) <*> gMarkup (d - 1))
-  , (1, (\b m -> "<action=`true` button=" ++ b ++ ">" ++ m ++ "</action>") <$> elements ["1", "3", "45"] <*> gMarkup (d - 1))
+  , (2, (\n b m -> "<action=`echo a" ++ show n ++ " >> clicks` button=" ++ b ++ ">" ++ m ++ "</action>") <$> choose (0, 999 :: Int) <*> elements ["1", "3", "13", "45"] <*> gMarkup (d - 1))
   ]
 
 gFont :: Gen String

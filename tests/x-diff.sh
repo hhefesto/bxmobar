@@ -2,12 +2,13 @@
 # The X11 bar's differential test: COUNT random configurations and lines
 # (tests/gen/GenX.hs), each shown by xmobar 0.50 and by xmobar-bend on a
 # fresh Xvfb screen; the screens are compared pixel by pixel, and the
-# windows' geometry and properties (_NET_WM_PID left out):
+# windows' geometry and properties (_NET_WM_PID left out), and the actions
+# that clicks across the window ran:
 #
 #   tests/x-diff.sh SEED COUNT [JOBS]
 #
 # Run in `nix develop .#x` (bend, GHC with xmobar, xmobar, Xvfb, xwd,
-# ImageMagick, xwininfo, xprop, the DejaVu fonts as FONTS). XB: a built
+# ImageMagick, xwininfo, xprop, xdotool, the DejaVu fonts as FONTS). XB: a built
 # xmobar-bend (else Main.bend is built). KEEP=1 keeps the cases' files.
 set -u
 here=${0:A:h}
@@ -34,7 +35,7 @@ fc-cache $FONTS > /dev/null 2>&1 || true
 # standard input; the screen, the window's geometry and properties
 shot() {
   local bar=$1 c=$2 name=$3
-  ( cat $c/line; sleep 3 ) | $bar $c/config > $c/$name.log 2>&1 &
+  ( cd $c; ( cat line; sleep 4 ) | $bar config > $name.log 2>&1 ) &
   local pid=$!
   sleep 1.8
   xwd -root -silent | magick xwd:- $c/$name.png
@@ -46,6 +47,19 @@ shot() {
     print "no window" > $c/$name.geom
     : > $c/$name.props
   fi
+  # clicks across the window, buttons 1 and 3: the actions they ran
+  if [[ -n $win ]]; then
+    local wx=$(awk '/Absolute upper-left X/ {print $4}' $c/$name.geom)
+    local wy=$(awk '/Absolute upper-left Y/ {print $4}' $c/$name.geom)
+    local ww=$(awk '/Width/ {print $2}' $c/$name.geom)
+    local wh=$(awk '/Height/ {print $2}' $c/$name.geom)
+    for ((j = 0; j < 16; j++)); do
+      xdotool mousemove $((wx + j * ww / 16 + 2)) $((wy + wh / 2)) click 1 click 3
+    done
+    sleep 0.6
+  fi
+  sort $c/clicks > $c/$name.clicks 2> /dev/null
+  rm -f $c/clicks
   kill $pid 2> /dev/null
   pkill -P $pid 2> /dev/null
   wait $pid 2> /dev/null
@@ -68,12 +82,14 @@ worker() {
     [[ $px == 0* ]] || same=0
     cmp -s $c/ref.geom $c/bend.geom || same=0
     cmp -s $c/ref.props $c/bend.props || same=0
+    cmp -s $c/ref.clicks $c/bend.clicks || same=0
     if (( same )); then
       print "$i same" >> $out/result$k
     else
       print "$i differ: pixels $px" >> $out/result$k
       diff $c/ref.geom $c/bend.geom >> $out/result$k
       diff $c/ref.props $c/bend.props >> $out/result$k
+      diff $c/ref.clicks $c/bend.clicks >> $out/result$k
     fi
   done
   kill $xv
