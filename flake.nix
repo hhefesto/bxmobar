@@ -68,9 +68,39 @@
           p.stm
           p.async
         ]);
+      # x11.c's libraries: X11 with Xrender, Xrandr and Xinerama, Cairo, Pango
+      xLibs =
+        pkgs: with pkgs; [
+          libx11
+          libxrender
+          libxrandr
+          libxinerama
+          cairo
+          pango
+          glib
+        ];
+      xModules = "pangocairo cairo-xlib xrender xrandr xinerama x11";
+      # their flags, for the C compiler bend runs (its wrapper reads them
+      # under the platform's suffix), from pkg-config
+      xFlags =
+        pkgs:
+        let
+          s = pkgs.stdenv.cc.suffixSalt;
+        in
+        ''
+          export NIX_CFLAGS_COMPILE_${s}="''${NIX_CFLAGS_COMPILE_${s}:-} $(pkg-config --cflags ${xModules})"
+          export NIX_LDFLAGS_${s}="''${NIX_LDFLAGS_${s}:-} $(pkg-config --libs ${xModules})"
+        '';
       inSource =
         pkgs: name: inputs: script:
-        pkgs.runCommand "xmobar-bend-${name}" { nativeBuildInputs = [ (bendFor pkgs) ] ++ inputs; } ''
+        pkgs.runCommand "xmobar-bend-${name}" {
+          nativeBuildInputs = [
+            (bendFor pkgs)
+            pkgs.pkg-config
+          ]
+          ++ inputs;
+          buildInputs = xLibs pkgs;
+        } ''
           export HOME=$TMPDIR
           cp -r ${src} w
           chmod -R u+w w
@@ -82,8 +112,9 @@
       packages = each (
         system: pkgs: {
           default = self.packages.${system}.xmobar-bend;
-          # the bar, text output only (xmobar -T at Plain)
+          # the bar: its X11 window, or text (-T at Plain)
           xmobar-bend = inSource pkgs "bar" [ ] ''
+            ${xFlags pkgs}
             mkdir -p $out/bin
             bend Main.bend -o $out/bin/xmobar-bend
           '';
@@ -102,6 +133,29 @@
 
       devShells = each (
         system: pkgs: {
+          # what building Main.bend by hand needs (x11.c's flags), and what
+          # tests/x-diff.sh runs: xmobar itself, Xvfb and the screen's tools,
+          # the DejaVu fonts
+          x = pkgs.mkShell {
+            packages = [
+              (bendFor pkgs)
+              pkgs.pkg-config
+              (ghcFor pkgs)
+              pkgs.haskellPackages.xmobar
+              pkgs.xvfb
+              pkgs.xwd
+              pkgs.xwininfo
+              pkgs.xprop
+              pkgs.imagemagick
+              pkgs.fontconfig
+              pkgs.procps
+              pkgs.zsh
+            ];
+            buildInputs = xLibs pkgs;
+            shellHook = xFlags pkgs + ''
+              export FONTS=${pkgs.dejavu_fonts}/share/fonts
+            '';
+          };
           default = pkgs.mkShell {
             packages = [
               (bendFor pkgs)

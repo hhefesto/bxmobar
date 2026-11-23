@@ -1,19 +1,22 @@
-# xmobar-bend: the bar. Xmobar.App.Main, Run.Loop and Text.Loop: the
-# configuration found and read, its template cut into its parts, each
+# xmobar-bend: the bar. Xmobar.App.Main, Run.Loop, Text.Loop and X11.Loop:
+# the configuration found and read, its template cut into its parts, each
 # part's command started at its rate (tenths of a second, on the
 # multiples of its rate, as Run.Timer's coalesced timers fire), and the
-# whole line written again whenever a part's text changes.
+# bar shown again whenever a part's text changes: as a line of text (-T,
+# or the config's textOutput), else in its X11 window.
 #
-# One def, loop, is the whole run: it runs the parts that are due, writes
-# the line if it changed, then waits for the next part due or a line on
-# standard input (when the template has a StdinReader). Bend asks every
-# loop to end, so it counts down a fuel of 10^9 steps (years of a bar);
-# standard input's end ends it sooner, as StdinReader's exitImmediately.
+# One def is the whole run, loop (text) or x.loop (X11): it runs the parts
+# that are due, shows the bar if it changed, then waits for the next part
+# due, a line on standard input (when the template has a StdinReader) or
+# an X event. Bend asks every loop to end, so it counts down a fuel of
+# 10^9 steps (years of a bar); standard input's end ends it sooner, as
+# StdinReader's exitImmediately.
 #
-# Build (sys.c is plain C, no flags):
+# Build (x11.c needs X11, Cairo and Pango's flags: the flake's x shell):
 #
-#   bend Main.bend -o xmobar-bend
-#   ./xmobar-bend -T [config]
+#   nix build            # result/bin/xmobar-bend
+#   nix develop .#x -c bend Main.bend -o xmobar-bend
+#   ./xmobar-bend [-T] [config]
 
 import Base
 import ./Hs.bend as H
@@ -26,6 +29,9 @@ import ./Read.bend as R
 import ./Config.bend as C
 import ./Date.bend as D
 import ./Sys.bend as S
+import ./Win.bend as W
+import ./Draw.bend as Dr
+import ./X.bend as X
 
 # Time ---------------------------------------------------------------------------------
 
@@ -911,6 +917,338 @@ def now.sec(n: Now) -> U32:
     case Now{s, _, _}:
       s
 
+# The X11 bar (Xmobar.X11.Loop, Window) ----------------------------------------------------
+
+# the bar's fixed facts: its window, its config's position, pickBroadest
+# and the font's height, how it draws, standard input's use, the run's
+# first second, each section's count of parts
+type XC is Data:
+  XC{win: U32, pos: C.Pos, broadest: Bool, ht: U32, paint: Dr.Paint, fg: String, bg: String, alpha: U32, dpi: String, stdin: Bool, sec0: U32, counts: List<&2, Nat>}
+
+# what changes: the window's rectangle, where the actions are, the
+# sections' texts last drawn (None: draw again)
+type XS is Data:
+  XS{r: W.Rect, acts: List<&2, Dr.ActPos>, last: Maybe<&2, List<&2, String>>}
+
+def x.rects(ws: List<&2, U32>) -> List<&2, W.Rect>:
+  match ws:
+    case Con{+x, Con{+y, Con{+w, Con{+h, rest}}}}:
+      W.Rect{x, y, w, h} <> x.rects(rest)
+    case _:
+      Nil{}
+
+def x.screens() -> IO(List<&2, W.Rect>):
+  do IO<List<&2, W.Rect>>:
+    ws : List<&2, U32> <- X.screens()
+    IO.pure(List<&2, W.Rect>, x.rects(ws))
+
+def nums.str(xs: List<&2, U32>) -> String:
+  match xs:
+    case Nil{}:
+      ""
+    case Con{+x, Nil{}}:
+      U32.show(x)
+    case Con{+x, rest}:
+      U32.show(x) ++ " " ++ nums.str(rest)
+
+# setStruts' d w svs
+def x.struts.of(+win: U32, +v: List<&2, U32>) -> IO(U32):
+  do IO<U32>:
+    _ : U32 <- X.prop32(win, "_NET_WM_STRUT_PARTIAL", "CARDINAL", nums.str(v))
+    X.prop32(win, "_NET_WM_STRUT", "CARDINAL", nums.str(List.take(&2, U32, v, 4n)))
+
+# setStruts r c d w srs
+def x.struts(+win: U32, r: W.Rect, p: C.Pos, rs: List<&2, W.Rect>) -> IO(U32):
+  x.struts.of(win, W.struts(r, p, rs))
+
+def x.when(c: Bool, act: Unit -> IO(U32)) -> IO(U32):
+  H.Bool.if(IO(U32), c, act, _ => IO.pure(U32, 0))
+
+# showWindow r c d w: mapped, its struts again from the screens now
+def x.show(+win: U32, +r: W.Rect, p: C.Pos) -> IO(U32):
+  do IO<U32>:
+    _ : U32 <- X.map(win)
+    rs : List<&2, W.Rect> <- x.screens()
+    _ : U32 <- x.struts(win, r, p, rs)
+    X.sync(0)
+
+# the sections' texts: each section's parts' texts, concatenated
+def sec.texts(counts: List<&2, Nat>, +ps: List<&2, Part>) -> List<&2, String>:
+  match counts:
+    case Nil{}:
+      Nil{}
+    case Con{+n, rest}:
+      line(List.take(&2, Part, ps, n)) <> sec.texts(rest, List.drop(&2, Part, ps, n))
+
+def strs.eq(a: List<&2, String>, b: List<&2, String>) -> Bool:
+  match a b:
+    case Nil{} Nil{}:
+      True{}
+    case Con{x, xr} Con{y, yr}:
+      Bool.and(String.eq(x, y), strs.eq(xr, yr))
+    case _ _:
+      False{}
+
+def drawn.same(m: Maybe<&2, List<&2, String>>, ts: List<&2, String>) -> Bool:
+  match m:
+    case Some{l}:
+      strs.eq(l, ts)
+    case None{}:
+      False{}
+
+def ext.of(ws: List<&2, U32>) -> Dr.Ext:
+  match ws:
+    case Con{+o, Con{+u, Con{+w, Con{+h, _}}}}:
+      Dr.Ext{o, u, w, h}
+    case _:
+      Dr.Ext{0, 0, 0, 0}
+
+# each markup laid out in the frame's context, in order
+def x.measure(ms: List<&2, String>) -> IO(List<&2, Dr.Ext>):
+  match ms:
+    case Nil{}:
+      IO.pure(List<&2, Dr.Ext>, Nil{})
+    case Con{m, rest}:
+      do IO<List<&2, Dr.Ext>>:
+        ws : List<&2, U32> <- X.layout(m)
+        more : List<&2, Dr.Ext> <- x.measure(rest)
+        IO.pure(List<&2, Dr.Ext>, ext.of(ws) <> more)
+
+# parseSegments: each section's text parsed (take 3 $ s ++ repeat "")
+def parse.secs(+fg: String, ts: List<&2, String>) -> List<&2, List<&2, T.Seg>>:
+  match ts:
+    case Nil{}:
+      Nil{}
+    case Con{+t, rest}:
+      T.parse(fg, t) <> parse.secs(fg, rest)
+
+def x.put(+win: U32, r: W.Rect, +bg: String, +alpha: U32, f: Dr.Frame) -> IO(List<&2, Dr.ActPos>):
+  match r f:
+    case W.Rect{+x, +y, +w, +h} Dr.Frame{ops, acts}:
+      do IO<List<&2, Dr.ActPos>>:
+        _ : U32 <- X.draw(win, x, y, w, h, bg, alpha, ops)
+        IO.pure(List<&2, Dr.ActPos>, acts)
+
+def rect.wh(r: W.Rect) -> List<&2, U32>:
+  match r:
+    case W.Rect{_, _, w, h}:
+      [w, h]
+
+def frame.at(+p: Dr.Paint, wh: List<&2, U32>, +segs: List<&2, List<&2, T.Seg>>, exts: List<&2, Dr.Ext>) -> Dr.Frame:
+  match wh:
+    case Con{+w, Con{+h, _}}:
+      Dr.frame(p, w, h, segs, exts)
+    case _:
+      Dr.frame(p, 0, 0, segs, exts)
+
+# Draw.draw: the sections parsed, their texts measured, the frame drawn
+def x.frame(xc: XC, +r: W.Rect, +ts: List<&2, String>) -> IO(List<&2, Dr.ActPos>):
+  match xc:
+    case XC{+win, _, _, _, +p, +fg, +bg, +alpha, +dpi, _, _, _}:
+      +segs = parse.secs(fg, ts)
+      do IO<List<&2, Dr.ActPos>>:
+        _ : U32 <- X.begin(dpi)
+        exts : List<&2, Dr.Ext> <- x.measure(Dr.markups(p, segs))
+        x.put(win, r, bg, alpha, frame.at(p, rect.wh(r), segs, exts))
+
+def x.redrawn(+xc: XC, +r: W.Rect, +ts: List<&2, String>) -> IO(XS):
+  do IO<XS>:
+    acts : List<&2, Dr.ActPos> <- x.frame(xc, r, ts)
+    IO.pure(XS, XS{r, acts, Some{ts}})
+
+# a Wakeup: drawn when the texts changed (or an Expose asked)
+def x.redraw(+xc: XC, s: XS, +ts: List<&2, String>) -> IO(XS):
+  match s:
+    case XS{+r, +acts, +last}:
+      H.Bool.if(IO(XS), drawn.same(last, ts), _ => IO.pure(XS, XS{r, acts, last}), _ => x.redrawn(xc, r, ts))
+
+# runActions: each command spawned
+def x.spawns(cs: List<&2, String>) -> IO(U32):
+  match cs:
+    case Nil{}:
+      IO.pure(U32, 0)
+    case Con{c, rest}:
+      do IO<U32>:
+        _ : U32 <- X.spawn(c)
+        x.spawns(rest)
+
+def rect.of.at(+broadest: Bool, p: C.Pos, +rs: List<&2, W.Rect>, +ht: U32) -> W.Rect:
+  W.set.position(broadest, p, rs, ht)
+
+def rect.parts(r: W.Rect) -> List<&2, U32>:
+  match r:
+    case W.Rect{x, y, w, h}:
+      [x, y, w, h]
+
+def x.move(+win: U32, r: List<&2, U32>) -> IO(U32):
+  match r:
+    case Con{+x, Con{+y, Con{+w, Con{+h, _}}}}:
+      X.move_resize(win, x, y, w, h)
+    case _:
+      IO.pure(U32, 0)
+
+# repositionWin: the position again on the screens now, the window moved
+# there, its struts set
+def x.reposition(xc: XC) -> IO(W.Rect):
+  match xc:
+    case XC{+win, +p, +broadest, +ht, _, _, _, _, _, _, _, _}:
+      do IO<W.Rect>:
+        +rs : List<&2, W.Rect> <- x.screens()
+        +r : W.Rect <- IO.pure(W.Rect, rect.of.at(broadest, p, rs, ht))
+        _ : U32 <- x.move(win, rect.parts(r))
+        _ : U32 <- x.struts(win, r, p, rs)
+        _ : U32 <- X.sync(0)
+        IO.pure(W.Rect, r)
+
+def xs.acts(s: XS) -> List<&2, Dr.ActPos>:
+  match s:
+    case XS{_, a, _}:
+      a
+
+def xs.forget(s: XS) -> XS:
+  match s:
+    case XS{r, a, _}:
+      XS{r, a, None{}}
+
+def xs.at(s: XS, +r: W.Rect) -> XS:
+  match s:
+    case XS{_, a, l}:
+      XS{r, a, l}
+
+# the events: an Expose draws again, a ButtonPress runs its actions, a
+# ConfigureNotify or a screen change repositions the window
+def x.events(evs: List<&2, U32>, +xc: XC, +s: XS) -> IO(XS):
+  match evs:
+    case Con{+k, Con{+a, Con{+b, +rest}}}:
+      H.Bool.if(IO(XS), U32.is_eq(k, 1), _ => x.events(rest, xc, xs.forget(s)), _ => H.Bool.if(IO(XS), U32.is_eq(k, 2), _ => IO.bind(U32, XS, x.spawns(Dr.clicked(xs.acts(s), a, b)), _ => x.events(rest, xc, s)), _ => IO.bind(W.Rect, XS, x.reposition(xc), r => x.events(rest, xc, xs.at(s, r)))))
+    case _:
+      IO.pure(XS, s)
+
+# a wait's end in the X bar: whether the bar goes on, its parts (a line
+# read fed to them), its state
+type XW is Data:
+  XW{go: Bool, ps: List<&2, Part>, s: XS}
+
+def xw.go(w: XW) -> Bool:
+  match w:
+    case XW{g, _, _}:
+      g
+
+def xw.ps(w: XW) -> List<&2, Part>:
+  match w:
+    case XW{_, ps, _}:
+      ps
+
+def xw.s(w: XW) -> XS:
+  match w:
+    case XW{_, _, s}:
+      s
+
+def x.stdin(+ps: List<&2, Part>, +s: XS) -> IO(XW):
+  do IO<XW>:
+    ls : List<&2, String> <- S.in_lines()
+    e : U32 <- S.in_eof()
+    IO.pure(XW, XW{Bool.not(U32.is_eq(e, 1)), wake.feed(Wake{ls, True{}}, ps), s})
+
+# what woke the bar: X's events (2), standard input (1) or the time (0)
+def x.woke(+k: U32, +xc: XC, +ps: List<&2, Part>, +s: XS) -> IO(XW):
+  H.Bool.if(IO(XW), U32.is_eq(k, 2), _ => IO.bind(List<&2, U32>, XW, X.events(), evs => IO.bind(XS, XW, x.events(evs, xc, s), s2 => IO.pure(XW, XW{True{}, ps, s2}))), _ => H.Bool.if(IO(XW), U32.is_eq(k, 1), _ => x.stdin(ps, s), _ => IO.pure(XW, XW{True{}, ps, s})))
+
+def xc.sec0(xc: XC) -> U32:
+  match xc:
+    case XC{_, _, _, _, _, _, _, _, _, _, s, _}:
+      s
+
+def xc.counts(xc: XC) -> List<&2, Nat>:
+  match xc:
+    case XC{_, _, _, _, _, _, _, _, _, _, _, c}:
+      c
+
+def xc.stdin(xc: XC) -> U32:
+  match xc:
+    case XC{_, _, _, _, _, _, _, _, _, i, _, _}:
+      Bool.pick(U32, i, 1, 0)
+
+# the X bar's loop: the parts due run, the frame drawn when the sections'
+# texts changed, then a wait for the next part due, an X event or a line
+def x.loop(fuel: Nat, go: Bool, +xc: XC, ps: List<&2, Part>, s: XS) -> IO(Unit):
+  match fuel go:
+    case 1n+f True{}:
+      do IO<Unit>:
+        +n : Now <- clock()
+        +ps1 : List<&2, Part> <- run.due(ps, tenths(n, xc.sec0(xc)), n)
+        s1 : XS <- x.redraw(xc, s, sec.texts(xc.counts(xc), ps1))
+        n2 : Now <- clock()
+        k : U32 <- X.wait(wait.ms(soonest(ps1, never()), n2, xc.sec0(xc)), xc.stdin(xc))
+        +w : XW <- x.woke(k, xc, ps1, s1)
+        x.loop(f, xw.go(w), xc, xw.ps(w), xw.s(w))
+    case _ _:
+      IO.pure(Unit, Unit{})
+
+def x.bool(b: Bool) -> U32:
+  Bool.pick(U32, b, 1, 0)
+
+def x.create.at(r: List<&2, U32>, +o: U32) -> IO(U32):
+  match r:
+    case Con{+x, Con{+y, Con{+w, Con{+h, _}}}}:
+      X.create(x, y, w, h, o)
+    case _:
+      X.create(0, 0, 1, 1, o)
+
+# createWin: the window where setPosition puts it, its properties
+# (setProperties) and struts, lowered (lowerOnStart), shown unless
+# hideOnStart; then the event loop's input selected, and the loop
+def x.win.at(+c: C.Config, +ps: List<&2, Part>, +counts: List<&2, Nat>, +rs: List<&2, W.Rect>, +ht: U32, +sec0: U32) -> IO(Unit):
+  match c:
+    case C.Config{_, _, +cls, +name, +bg, +fg, +pos, _, _, _, _, _, _, _, _, +alpha, +hide, +alld, +over, +broad, +lower, _, _, _, _, _, _, _, +dpi}:
+      +r = W.set.position(broad, pos, rs, ht)
+      do IO<Unit>:
+        +win : U32 <- x.create.at(rect.parts(r), x.bool(over))
+        _ : U32 <- X.set_text(win, 0, cls)
+        _ : U32 <- X.set_text(win, 1, name)
+        dock : U32 <- X.atom("_NET_WM_WINDOW_TYPE_DOCK")
+        _ : U32 <- X.prop32(win, "_NET_WM_WINDOW_TYPE", "ATOM", U32.show(dock))
+        _ : U32 <- x.when(alld, _ => X.prop32(win, "_NET_WM_DESKTOP", "CARDINAL", "4294967295"))
+        pid : U32 <- X.pid()
+        _ : U32 <- X.prop32(win, "_NET_WM_PID", "CARDINAL", U32.show(pid))
+        _ : U32 <- x.struts(win, r, pos, rs)
+        _ : U32 <- x.when(lower, _ => X.lower(win))
+        _ : U32 <- x.when(Bool.not(hide), _ => x.show(win, r, pos))
+        _ : U32 <- X.select(win)
+        x.loop(fuel(), True{}, XC{win, pos, broad, ht, Dr.look(c), fg, bg, alpha, dpi, has.stdin(ps), sec0, counts}, ps, XS{r, Nil{}, None{}})
+
+def x.font.ht(fe: List<&2, U32>) -> Maybe<&2, U32>:
+  match fe:
+    case Con{+a, Con{+d, _}}:
+      Some{W.height(a, d)}
+    case _:
+      None{}
+
+def x.started(m: Maybe<&2, U32>, +c: C.Config, +ps: List<&2, Part>, +counts: List<&2, Nat>, +rs: List<&2, W.Rect>, +sec0: U32) -> IO(Unit):
+  match m:
+    case Some{+ht}:
+      x.win.at(c, ps, counts, rs, ht, sec0)
+    case None{}:
+      IO.die(Unit, 1, "xmobar-bend: createFontSet: no font set loads")
+
+def config.font(c: C.Config) -> String:
+  match c:
+    case C.Config{f, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _}:
+      f
+
+def x.start(+c: C.Config, +ps: List<&2, Part>, +counts: List<&2, Nat>) -> IO(Unit):
+  do IO<Unit>:
+    rs : List<&2, W.Rect> <- x.screens()
+    fe : List<&2, U32> <- X.font_extents(config.font(c))
+    n : Now <- clock()
+    x.started(x.font.ht(fe), c, ps, counts, rs, now.sec(n))
+
+# x11Loop: the display, the window, the loop
+def x.bar(+c: C.Config, +ps: List<&2, Part>, +counts: List<&2, Nat>) -> IO(Unit):
+  do IO<Unit>:
+    ok : U32 <- X.open()
+    H.Bool.if(IO(Unit), U32.is_eq(ok, 0), _ => IO.die(Unit, 1, "xmobar-bend: cannot open display"), _ => x.start(c, ps, counts))
+
 def bar.go(plain: Bool, +fg: String, +ps: List<&2, Part>) -> IO(Unit):
   match plain:
     case True{}:
@@ -920,47 +1258,87 @@ def bar.go(plain: Bool, +fg: String, +ps: List<&2, Part>) -> IO(Unit):
     case False{}:
       IO.die(Unit, 1, "xmobar-bend: only Plain text output is ported")
 
-# the bar from a config: its template's parts, then the loop
-def bar(c: C.Config) -> IO(Unit):
-  match c:
-    case C.Config{_, _, _, _, _, +fg, _, _, tof, _, _, _, _, _, _, _, _, _, _, _, _, _, _, +cmds, +sep, +align, +tpl, _, _}:
-      bar.go(tof.plain(tof), fg, sections(cmds, sep, T.split(align, tpl)))
+# how many parts each section has
+def counts.of(+rs: List<&2, C.Run>, +sep: String, ss: List<&2, String>) -> List<&2, Nat>:
+  match ss:
+    case Nil{}:
+      Nil{}
+    case s <> rest:
+      List.length(&2, Part, parts.of(rs, T.template(sep, s))) <> counts.of(rs, sep, rest)
 
-def bar.of(r: C.CR, +path: String) -> IO(Unit):
+# a config's parts, and how many each section has
+def bar.parts(c: C.Config) -> List<&2, Part>:
+  match c:
+    case C.Config{_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, +cmds, +sep, +align, +tpl, _, _}:
+      sections(cmds, sep, T.split(align, tpl))
+
+def bar.counts(c: C.Config) -> List<&2, Nat>:
+  match c:
+    case C.Config{_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, +cmds, +sep, +align, +tpl, _, _}:
+      counts.of(cmds, sep, T.split(align, tpl))
+
+def bar.fg(c: C.Config) -> String:
+  match c:
+    case C.Config{_, _, _, _, _, fg, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _}:
+      fg
+
+def bar.text(c: C.Config) -> Bool:
+  match c:
+    case C.Config{_, _, _, _, _, _, _, t, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _}:
+      t
+
+def bar.plain(c: C.Config) -> Bool:
+  match c:
+    case C.Config{_, _, _, _, _, _, _, _, tof, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _}:
+      tof.plain(tof)
+
+# the bar from a config: text (-T, at Plain; or the config's textOutput,
+# at its format) or the X11 window
+def bar(+c: C.Config, +text: Bool) -> IO(Unit):
+  H.Bool.if(IO(Unit), text, _ => bar.go(True{}, bar.fg(c), bar.parts(c)), _ => H.Bool.if(IO(Unit), bar.text(c), _ => bar.go(bar.plain(c), bar.fg(c), bar.parts(c)), _ => x.bar(c, bar.parts(c), bar.counts(c))))
+
+def bar.of(r: C.CR, +path: String, +text: Bool) -> IO(Unit):
   match r:
     case C.CROk{c, _}:
-      bar(c)
+      bar(c, text)
     case C.CRErr{at}:
       IO.die(Unit, 1, "xmobar-bend: " ++ path ++ ": invalid configuration file, at: " ++ String.take(at, 60n))
 
-def from.file(+path: String) -> IO(Unit):
+def from.file(+path: String, +text: Bool) -> IO(Unit):
   do IO<Unit>:
     k : U32 <- S.kind(path)
     t : String <- S.slurp(path)
-    H.Bool.if(IO(Unit), U32.is_eq(k, 0), _ => IO.die(Unit, 1, path ++ ": file not found"), _ => bar.of(C.parse(t), path))
+    H.Bool.if(IO(Unit), U32.is_eq(k, 0), _ => IO.die(Unit, 1, path ++ ": file not found"), _ => bar.of(C.parse(t), path, text))
 
-def from.found(m: Maybe<&2, String>) -> IO(Unit):
+def from.found(m: Maybe<&2, String>, +text: Bool) -> IO(Unit):
   match m:
     case None{}:
-      bar(C.default())
+      bar(C.default(), text)
     case Some{+p}:
-      H.Bool.if(IO(Unit), String.ends_with(p, "xmobar.hs"), _ => IO.die(Unit, 1, "xmobar-bend: " ++ p ++ " is a Haskell configuration, not supported"), _ => from.file(p))
+      H.Bool.if(IO(Unit), String.ends_with(p, "xmobar.hs"), _ => IO.die(Unit, 1, "xmobar-bend: " ++ p ++ " is a Haskell configuration, not supported"), _ => from.file(p, text))
 
-def start(bad: List<&2, String>, files: List<&2, String>) -> IO(Unit):
+def start(bad: List<&2, String>, files: List<&2, String>, +text: Bool) -> IO(Unit):
   match bad files:
     case Con{b, _} _:
       IO.die(Unit, 1, "xmobar-bend: option " ++ b ++ " is not ported (only -T/--text at Plain)")
     case Nil{} Nil{}:
       do IO<Unit>:
         m : Maybe<&2, String> <- config.file()
-        from.found(m)
+        from.found(m, text)
     case Nil{} Con{p, Nil{}}:
-      from.file(p)
+      from.file(p, text)
     case Nil{} _:
       IO.die(Unit, 1, "xmobar-bend: too many arguments")
 
+def any.text(xs: List<&2, String>) -> Bool:
+  match xs:
+    case Nil{}:
+      False{}
+    case Con{+x, rest}:
+      Bool.or(is.text.flag(x), any.text(rest))
+
 def start.of(+xs: List<&2, String>) -> IO(Unit):
-  start(cl.bad(xs), cl.files(xs))
+  start(cl.bad(xs), cl.files(xs), any.text(xs))
 
 def main() -> IO(Unit):
   do IO<Unit>:
