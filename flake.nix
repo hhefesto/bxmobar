@@ -31,6 +31,7 @@
         fileset = lib.fileset.unions (
           [ (lib.fileset.fileFilter (f: f.hasExt "bend") ./.) ]
           ++ lib.optional (builtins.pathExists ./x11.c) ./x11.c
+          ++ lib.optional (builtins.pathExists ./sys.c) ./sys.c
           ++ [ ./tests ]
         );
       };
@@ -80,6 +81,12 @@
     {
       packages = each (
         system: pkgs: {
+          default = self.packages.${system}.xmobar-bend;
+          # the bar, text output only (xmobar -T at Plain)
+          xmobar-bend = inSource pkgs "bar" [ ] ''
+            mkdir -p $out/bin
+            bend Main.bend -o $out/bin/xmobar-bend
+          '';
           ghc-xmobar = ghcFor pkgs;
           xmobar-lib = xmobarLibFor pkgs;
           bend = bendFor pkgs;
