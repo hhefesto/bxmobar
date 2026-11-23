@@ -16,7 +16,9 @@ import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar
 import Control.Exception (BlockedIndefinitelyOnMVar (..), catch)
 import Control.Monad (foldM_, forM_, when)
-import System.Directory (listDirectory)
+import System.Directory (doesDirectoryExist, listDirectory)
+import System.Environment (lookupEnv)
+import Xmobar.System.StatFS (FileSystemStats (..), getFileSystemStats)
 import System.Environment (getArgs)
 import System.FilePath ((</>))
 import System.IO (hFlush, stdout)
@@ -32,15 +34,34 @@ install :: FilePath -> FilePath -> IO ()
 install cur step = do
   fs <- listDirectory step
   forM_ fs $ \f -> do
-    s <- B.readFile (step </> f)
-    fd <- openFd (cur </> f) WriteOnly defaultFileFlags {trunc = True}
-    _ <- fdWrite fd (B.unpack s)
-    closeFd fd
+    dir <- doesDirectoryExist (step </> f)
+    if dir
+      then install (cur </> f) (step </> f)
+      else do
+        s <- B.readFile (step </> f)
+        fd <- openFd (cur </> f) WriteOnly defaultFileFlags {trunc = True}
+        _ <- fdWrite fd (B.unpack s)
+        closeFd fd
+
+splitOn :: Char -> String -> [String]
+splitOn c s = case break (== c) s of
+  (a, _ : b) -> a : splitOn c b
+  (a, []) -> [a]
 
 main :: IO ()
 main = do
   spec : cur : steps <- getArgs
   let mon = read spec :: Monitors
+  -- FILL=path:bytes,...: files of that many bytes written first (in a
+  -- tmpfs bwrap made), and each path's statfs printed first, as DiskU
+  -- reads it: total, available and used bytes
+  fill <- maybe [] (splitOn ',') <$> lookupEnv "FILL"
+  forM_ fill $ \pf -> do
+    let (p, n) = break (== ':') pf
+    writeFile (p </> "filler") (replicate (read (drop 1 n)) 'x')
+  forM_ fill $ \pf -> do
+    st <- getFileSystemStats (takeWhile (/= ':') pf)
+    print (maybe [0, 0, 0] (\f -> [fsStatByteCount f, fsStatBytesAvailable f, fsStatBytesUsed f]) st)
   install cur (head steps)
   out <- newEmptyMVar
   _ <- forkIO (start mon (putMVar out))
