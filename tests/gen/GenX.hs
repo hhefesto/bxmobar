@@ -63,20 +63,22 @@ gBoxAttrs = concat <$> sequence
     opt f g = frequency [(1, pure ""), (1, f <$> g)]
 
 -- markup, depth d
-gMarkup :: Int -> Gen String
-gMarkup d = concat <$> (choose (1, 3) >>= flip vectorOf (gItem d))
+gMarkup :: [String] -> Int -> Gen String
+gMarkup is d = concat <$> (choose (1, 3) >>= flip vectorOf (gItem is d))
 
-gItem :: Int -> Gen String
-gItem d = frequency $
+-- is: the icon files there are
+gItem :: [String] -> Int -> Gen String
+gItem is d = frequency $
   [ (6, gText)
+  , (1, (\p -> "<icon=" ++ p ++ "/>") <$> elements (is ++ ["none.xbm", "/nonexistent/x.xpm", "."]))
   , (1, (\n -> "<hspace=" ++ show n ++ "/>") <$> choose (0, 40 :: Int))
   ] ++ if d <= 0 then [] else
-  [ (3, (\c m -> "<fc=" ++ c ++ ">" ++ m ++ "</fc>") <$> gColour <*> gMarkup (d - 1))
-  , (2, (\c b m -> "<fc=" ++ c ++ "," ++ b ++ ">" ++ m ++ "</fc>") <$> gColour <*> gColour <*> gMarkup (d - 1))
-  , (1, (\c b o m -> "<fc=" ++ c ++ "," ++ b ++ ":" ++ show o ++ ">" ++ m ++ "</fc>") <$> gColour <*> gColour <*> choose (0, 6 :: Int) <*> gMarkup (d - 1))
-  , (2, (\a m -> "<box" ++ a ++ ">" ++ m ++ "</box>") <$> gBoxAttrs <*> gMarkup (d - 1))
-  , (1, (\i m -> "<fn=" ++ show i ++ ">" ++ m ++ "</fn>") <$> choose (0, 3 :: Int) <*> gMarkup (d - 1))
-  , (2, (\n b m -> "<action=`echo a" ++ show n ++ " >> clicks` button=" ++ b ++ ">" ++ m ++ "</action>") <$> choose (0, 999 :: Int) <*> elements ["1", "3", "13", "45"] <*> gMarkup (d - 1))
+  [ (3, (\c m -> "<fc=" ++ c ++ ">" ++ m ++ "</fc>") <$> gColour <*> gMarkup is (d - 1))
+  , (2, (\c b m -> "<fc=" ++ c ++ "," ++ b ++ ">" ++ m ++ "</fc>") <$> gColour <*> gColour <*> gMarkup is (d - 1))
+  , (1, (\c b o m -> "<fc=" ++ c ++ "," ++ b ++ ":" ++ show o ++ ">" ++ m ++ "</fc>") <$> gColour <*> gColour <*> choose (0, 6 :: Int) <*> gMarkup is (d - 1))
+  , (2, (\a m -> "<box" ++ a ++ ">" ++ m ++ "</box>") <$> gBoxAttrs <*> gMarkup is (d - 1))
+  , (1, (\i m -> "<fn=" ++ show i ++ ">" ++ m ++ "</fn>") <$> choose (0, 3 :: Int) <*> gMarkup is (d - 1))
+  , (2, (\n b m -> "<action=`echo a" ++ show n ++ " >> clicks` button=" ++ b ++ ">" ++ m ++ "</action>") <$> choose (0, 999 :: Int) <*> elements ["1", "3", "13", "45"] <*> gMarkup is (d - 1))
   ]
 
 gFont :: Gen String
@@ -113,8 +115,11 @@ gBorder = frequency
   , (1, (\c m -> c ++ " " ++ show m) <$> elements ["TopBM", "BottomBM", "FullBM"] <*> choose (0, 8 :: Int))
   ]
 
-gConfig :: Gen (String, String)
+gConfig :: Gen (String, String, [(String, String)])
 gConfig = do
+  icons <- gIcons
+  let is = map fst icons ++ map (("./" ++) . fst) icons
+  ioff <- frequency [(3, pure Nothing), (1, Just <$> choose (-6, 6 :: Int))]
   font <- gFont
   nfonts <- choose (0, 3)
   fonts <- vectorOf nfonts gFont
@@ -128,11 +133,11 @@ gConfig = do
   bw <- frequency [(2, pure Nothing), (2, Just <$> choose (0, 4 :: Int))]
   alpha <- frequency [(5, pure Nothing), (1, Just <$> choose (0, 255 :: Int))]
   dpi <- frequency [(5, pure Nothing), (1, Just <$> elements [72, 96, 120, 144 :: Int])]
-  l <- frequency [(1, pure ""), (3, gMarkup 2)]
-  c <- frequency [(2, pure ""), (2, gMarkup 2)]
-  r <- frequency [(1, pure ""), (3, gMarkup 2)]
+  l <- frequency [(1, pure ""), (3, gMarkup is 2)]
+  c <- frequency [(2, pure ""), (2, gMarkup is 2)]
+  r <- frequency [(1, pure ""), (3, gMarkup is 2)]
   slot <- elements [0, 1, 2 :: Int]
-  line <- gMarkup 2
+  line <- gMarkup is 2
   let stdin = "%UnsafeStdinReader%"
       safe = filter (`notElem` "%{}")
       sections = case slot of
@@ -157,20 +162,68 @@ gConfig = do
         , field "overrideRedirect" "True"
         ]
         ++ [field "textOffset" (show o) | Just o <- [offs]]
+        ++ [field "iconOffset" (show o) | Just o <- [ioff]]
         ++ [field "textOffsets" (show o) | Just o <- [toffs]]
         ++ [field "borderWidth" (show w) | Just w <- [bw]]
         ++ [field "alpha" (show a) | Just a <- [alpha]]
         ++ [field "dpi" (show (fromIntegral d :: Double)) | Just d <- [dpi]]
         ++ ["  }"]
-  pure (cfg, line)
+  pure (cfg, line, icons)
 
 main :: IO ()
 main = do
   [seedS, countS, dir] <- getArgs
   let seed = read seedS
   forM_ [1 .. read countS :: Int] $ \i -> do
-    let (cfg, line) = unGen gConfig (mkQCGen (seed * 1000003 + i)) 30
+    let (cfg, line, icons) = unGen gConfig (mkQCGen (seed * 1000003 + i)) 30
         d = dir </> show i
     createDirectoryIfMissing True d
+    forM_ icons $ \(n, t) -> writeFile (d </> n) t
     writeFile (d </> "config") cfg
     writeFile (d </> "line") (filter (/= '\n') line ++ "\n")
+
+-- Icons -------------------------------------------------------------------------------------
+
+-- an XBM of w by h, random bits
+gXbm :: Gen String
+gXbm = do
+  w <- choose (1, 24 :: Int)
+  h <- choose (1, 24 :: Int)
+  bytes <- vectorOf (((w + 7) `div` 8) * h) (choose (0, 255 :: Int))
+  let hex b = "0x" ++ [hd (b `div` 16), hd (b `mod` 16)]
+      hd d = "0123456789abcdef" !! d
+  pure $ unlines
+    [ "#define i_width " ++ show w
+    , "#define i_height " ++ show h
+    , "static unsigned char i_bits[] = {"
+    , "  " ++ intercalate ", " (map hex bytes) ++ " };"
+    ]
+
+-- an XPM of w by h in up to four colours, one maybe None (a shape mask)
+gXpm :: Gen String
+gXpm = do
+  w <- choose (1, 24 :: Int)
+  h <- choose (1, 24 :: Int)
+  k <- choose (1, 4 :: Int)
+  cols <- vectorOf k (frequency [(3, gHex), (1, pure "None"), (1, elements ["red", "blue", "white"])])
+  let keys = take k ".+@#"
+  rows <- vectorOf h (vectorOf w (elements keys))
+  pure $ unlines $
+    [ "/* XPM */"
+    , "static char * i_xpm[] = {"
+    , show (unwords [show w, show h, show k, "1"]) ++ ","
+    ]
+    ++ [show ([c] ++ " c " ++ col) ++ "," | (c, col) <- zip keys cols]
+    ++ [show r ++ (if i == h then "};" else ",") | (i, r) <- zip [1 ..] rows]
+  where
+    gHex = ('#' :) <$> vectorOf 6 (elements "0123456789abcdef")
+
+-- the case's icon files (name, text) and the names its markup may use
+gIcons :: Gen [(String, String)]
+gIcons = do
+  n <- choose (0, 3 :: Int)
+  fmap concat $ mapM (\i -> frequency
+    [ (3, (\t -> [("i" ++ show i ++ ".xbm", t)]) <$> gXbm)
+    , (3, (\t -> [("i" ++ show i ++ ".xpm", t)]) <$> gXpm)
+    , (1, pure [("i" ++ show i ++ ".bad", "not a bitmap\n")])
+    ]) [1 .. n]

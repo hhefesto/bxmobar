@@ -88,3 +88,8 @@ def draw(win: U32, x: U32, y: U32, w: U32, h: U32, bg: String, alpha: U32, ops: 
 # runAction: sh -c (cmd ++ " &"), waited for
 def spawn(cmd: String) -> IO(U32):
   import "./x11.c"
+
+# loadBitmap for the cache: the icon the markup names key, read from path
+# as an XBM, else an XPM: [id, w, h] once cached, [] when it does not load
+def icon(win: U32, key: String, path: String) -> IO(List<&2, U32>):
+  import "./x11.c"

@@ -29,6 +29,7 @@
 #include <X11/extensions/Xrender.h>
 #include <X11/extensions/Xrandr.h>
 #include <X11/extensions/Xinerama.h>
+#include <X11/xpm.h>
 #include <cairo/cairo.h>
 #include <cairo/cairo-xlib.h>
 #include <pango/pangocairo.h>
@@ -39,6 +40,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <wchar.h>
+#include <sys/stat.h>
 
 static Display* xb_dpy;
 static Window   xb_root;
@@ -48,6 +50,22 @@ static PangoContext* xb_ctx;
 static PangoLayout** xb_lays;
 static u32           xb_nlays;
 static u32           xb_cap;
+
+// the icons' cache (Bitmap.updateCache's): each bitmap by the path the
+// markup names, with its size, its shape mask (an XPM's) and whether it
+// is a pixmap (XPM) or a bitmap (XBM, drawn as plane 1)
+typedef struct {
+  char*    key;
+  unsigned w, h;
+  Pixmap   pix, mask;
+  int      poly;
+} XbIcon;
+static XbIcon* xb_icons;
+static u32     xb_nicons;
+
+// the frame being drawn: its pixmap and GC (the icons are drawn with it)
+static Pixmap xb_cur_pix;
+static GC     xb_cur_gc;
 
 static Term xb_words(Env e, const u32* p, u64 n) {
   Term xs = term_pak(CID(Nil), 0);
@@ -394,6 +412,62 @@ static void __attribute__((constructor)) xb_events_use(void) {
 }
 #endif
 
+// X.icon(win, key, path): updateCache's loadBitmap, for a key not in the
+// cache: the file at path (doesFileExist) read as an XBM (XReadBitmapFile),
+// else as an XPM (XpmReadFileToPixmap, XpmReturnAllocPixels; any status
+// but XpmSuccess fails); [id, w, h] once in the cache, [] when it does not
+// load (tried again the next time it is drawn)
+#ifdef CID(icon)
+Term xb_icon_run(Env e, Term* f, IoWork* w) {
+  u64 n = 0;
+  Window win  = (Window)(u32)f[0];
+  char*  key  = io_cstr(e, f[1], &n);
+  char*  path = io_cstr(e, f[2], &n);
+  for (u32 i = 0; i < xb_nicons; i += 1) {
+    if (strcmp(xb_icons[i].key, key) == 0) {
+      free(key);
+      free(path);
+      u32 v[3] = { i, xb_icons[i].w, xb_icons[i].h };
+      return xb_words(e, v, 3);
+    }
+  }
+  struct stat st;
+  XbIcon ic;
+  memset(&ic, 0, sizeof ic);
+  int ok = 0;
+  if (stat(path, &st) == 0 && !S_ISDIR(st.st_mode)) {
+    int xh, yh;
+    if (XReadBitmapFile(xb_dpy, win, path, &ic.w, &ic.h, &ic.pix, &xh, &yh) == BitmapSuccess) {
+      ok = 1;
+    } else {
+      XpmAttributes at;
+      memset(&at, 0, sizeof at);
+      at.valuemask = XpmReturnAllocPixels;
+      if (XpmReadFileToPixmap(xb_dpy, win, path, &ic.pix, &ic.mask, &at) == XpmSuccess) {
+        ic.w    = at.width;
+        ic.h    = at.height;
+        ic.poly = 1;
+        ok      = 1;
+      }
+    }
+  }
+  free(path);
+  if (!ok) {
+    free(key);
+    return term_pak(CID(Nil), 0);
+  }
+  ic.key = key;
+  xb_icons = realloc(xb_icons, sizeof(XbIcon) * (xb_nicons + 1));
+  xb_icons[xb_nicons] = ic;
+  u32 v[3] = { xb_nicons, ic.w, ic.h };
+  xb_nicons += 1;
+  return xb_words(e, v, 3);
+}
+static void __attribute__((constructor)) xb_icon_use(void) {
+  io_eff(CID(icon), xb_icon_run);
+}
+#endif
+
 // Drawing --------------------------------------------------------------------------
 
 static void xb_free_frame(void) {
@@ -506,12 +580,92 @@ static void xb_background(Drawable p, const char* bg, int alpha, int x, int y, u
   XRenderFreePicture(xb_dpy, pic);
 }
 
+// a colour name sent as its characters' codes, commas between ("-": "")
+static char* xb_codes(const char* s) {
+  size_t cap = strlen(s) * 4 + 8, n = 0;
+  char*  out = malloc(cap);
+  const char* p = s;
+  while (*p != 0 && *p != '-') {
+    char* q;
+    unsigned long c = strtoul(p, &q, 10);
+    if (q == p) {
+      break;
+    }
+    if (c < 0x80) {
+      out[n++] = (char)c;
+    } else if (c < 0x800) {
+      out[n++] = (char)(0xC0 | (c >> 6));
+      out[n++] = (char)(0x80 | (c & 0x3F));
+    } else if (c < 0x10000) {
+      out[n++] = (char)(0xE0 | (c >> 12));
+      out[n++] = (char)(0x80 | ((c >> 6) & 0x3F));
+      out[n++] = (char)(0x80 | (c & 0x3F));
+    } else {
+      out[n++] = (char)(0xF0 | (c >> 18));
+      out[n++] = (char)(0x80 | ((c >> 12) & 0x3F));
+      out[n++] = (char)(0x80 | ((c >> 6) & 0x3F));
+      out[n++] = (char)(0x80 | (c & 0x3F));
+    }
+    p = *q == ',' ? q + 1 : q;
+  }
+  out[n] = 0;
+  return out;
+}
+
+// ColorCache's initColor: allocNamedColor's pixel, black when it fails
+static unsigned long xb_pixel(const char* name) {
+  int scr = DefaultScreen(xb_dpy);
+  XColor sc, ex;
+  if (XAllocNamedColor(xb_dpy, DefaultColormap(xb_dpy, scr), name, &sc, &ex)) {
+    return sc.pixel;
+  }
+  return BlackPixel(xb_dpy, scr);
+}
+
+// I id x y fg bg: Bitmap.drawBitmap: the icon at x, its middle at row y,
+// in the colours fg and bg (an XBM's plane 1 copied, an XPM's pixmap
+// copied through its shape mask)
+static void xb_icon_op(char* line) {
+  unsigned id;
+  long x, y;
+  char fgc[2048], bgc[2048];
+  if (sscanf(line + 1, "%u %ld %ld %2047s %2047s", &id, &x, &y, fgc, bgc) != 5 || id >= xb_nicons) {
+    return;
+  }
+  XbIcon* ic = &xb_icons[id];
+  char* fg = xb_codes(fgc);
+  char* bg = xb_codes(bgc);
+  unsigned long fp = xb_pixel(fg);
+  unsigned long bp = xb_pixel(bg);
+  free(fg);
+  free(bg);
+  int ix = (int)(int32_t)(u32)x;
+  int iy = 1 + (int)(int32_t)(u32)y - (int)(ic->h / 2);
+  XSetForeground(xb_dpy, xb_cur_gc, fp);
+  XSetBackground(xb_dpy, xb_cur_gc, bp);
+  if (ic->mask != None) {
+    XSetClipOrigin(xb_dpy, xb_cur_gc, ix, iy);
+    XSetClipMask(xb_dpy, xb_cur_gc, ic->mask);
+  }
+  if (ic->poly) {
+    XCopyArea(xb_dpy, ic->pix, xb_cur_pix, xb_cur_gc, 0, 0, ic->w, ic->h, ix, iy);
+  } else {
+    XCopyPlane(xb_dpy, ic->pix, xb_cur_pix, xb_cur_gc, 0, 0, ic->w, ic->h, ix, iy, 1);
+  }
+  XSetClipMask(xb_dpy, xb_cur_gc, None);
+}
+
 // one op of Draw.bend's frame, each with a new cairo_t (renderWith):
 //   T layout x y width   the layout at x y, ellipsized at width (-1 none)
 //   R colour x y w h     a rectangle filled (fillPreserve)
 //   L colour lw n x0 y0 x1 y1 ...  n lines stroked at line width lw
 //   S colour lw x y w h  a rectangle stroked
+//   I id x y fg bg       an icon (xb_icon_op)
 static void xb_op(cairo_surface_t* s, char* line) {
+  if (line[0] == 'I') {
+    xb_icon_op(line);
+    return;
+  }
   long v[1 + 4 + 2 + 4 * 16];
   int  k = 0;
   char op = line[0];
@@ -572,6 +726,8 @@ Term xb_draw_run(Env e, Term* f, IoWork* w) {
   Pixmap   p   = XCreatePixmap(xb_dpy, win, wd, ht, DefaultDepth(xb_dpy, scr));
   GC       gc  = XCreateGC(xb_dpy, win, 0, NULL);
   XSetGraphicsExposures(xb_dpy, gc, False);
+  xb_cur_pix = p;
+  xb_cur_gc  = gc;
   xb_background(p, bg, al, x, y, wd, ht);
   cairo_surface_t* s = cairo_xlib_surface_create(xb_dpy, p, DefaultVisual(xb_dpy, scr), (int)wd, (int)ht);
   char* line = ops;

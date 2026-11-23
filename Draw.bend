@@ -225,11 +225,63 @@ def markups(+l: Paint, secs: List<&2, List<&2, T.Seg>>) -> List<&2, String>:
 type Ext is Data:
   Ext{o: U32, u: U32, w: U32, h: U32}
 
+# an icon in the cache (updateCache's): its path as the markup names it,
+# x11.c's place for its bitmap, its width and height
+type Icon is Data:
+  Icon{path: String, id: U32, w: U32, h: U32}
+
+def icon.find(+p: String, xs: List<&2, Icon>) -> Maybe<&2, Icon>:
+  match xs:
+    case Nil{}:
+      None{}
+    case Con{Icon{+q, +i, +w, +h}, rest}:
+      H.Bool.if(Maybe<&2, Icon>, String.eq(q, p), _ => Some{Icon{q, i, w, h}}, _ => icon.find(p, rest))
+
+def icon.paths.go(ss: List<&2, T.Seg>, acc: List<&2, String>) -> List<&2, String>:
+  match ss:
+    case Nil{}:
+      acc
+    case Con{T.Seg{T.WIcon{p}, _, _, _}, rest}:
+      icon.paths.go(rest, p <> acc)
+    case Con{_, rest}:
+      icon.paths.go(rest, acc)
+
+# the icons' paths, in the segments' order (updateIconCache's paths)
+def icon.paths(secs: List<&2, List<&2, T.Seg>>, acc: List<&2, String>) -> List<&2, String>:
+  match secs:
+    case Nil{}:
+      List.reverse(&2, String, acc)
+    case Con{ss, rest}:
+      icon.paths(rest, icon.paths.go(ss, acc))
+
+# round :: Double -> Position of a q: to the nearest pixel, a half to the
+# even one
+def round.q(+q: U32) -> U32:
+  +k = U32.or(U32.shrn(q, 11n), Bool.pick(U32, s.ge0(q), 0, 4292870144))
+  +r = U32.and(q, 2047)
+  H.Bool.if(U32, U32.is_lt(r, 1024), _ => k, _ => H.Bool.if(U32, U32.is_gt(r, 1024), _ => U32.add(k, 1), _ => Bool.pick(U32, U32.is_zero(U32.and(k, 1)), k, U32.add(k, 1))))
+
+# a string as the ops carry it: its characters' codes, commas between
+# ("-" when empty)
+def codes.go(s: String) -> String:
+  match s:
+    case SNil{}:
+      ""
+    case SCon{c, SNil{}}:
+      U32.show(Char.to_u32(c))
+    case SCon{c, rest}:
+      U32.show(Char.to_u32(c)) ++ "," ++ codes.go(rest)
+
+def codes(+s: String) -> String:
+  Bool.pick(String, String.is_empty(s), "-", codes.go(s))
+
 # Renderinfo's renderer: a text's layout (its place in X.measure's list),
-# its logical width and its vertical offset, in q; an Hspace's or an
-# icon's (nothing)
+# its logical width and its vertical offset, in q; an icon's bitmap, its
+# width (q), the pixel row of its middle, its colours; an Hspace's, or an
+# icon's not loaded (nothing)
 type RK is Data:
   RText{layout: U32, w: U32, voff: U32}
+  RIcon{id: U32, w: U32, y: U32, fg: String, bg: String}
   RNone{}
 
 type RI is Data:
@@ -259,19 +311,46 @@ def paint.bg(p: Paint) -> String:
     case Paint{_, _, bg, _, _, _, _, _, _}:
       bg
 
+def paint.icon(p: Paint) -> U32:
+  match p:
+    case Paint{_, _, _, _, _, icon, _, _, _}:
+      icon
+
+def fb.fg(f: FB) -> String:
+  match f:
+    case FB{fg, _}:
+      fg
+
+def fb.bg.of(f: FB) -> String:
+  match f:
+    case FB{_, bg}:
+      bg
+
+# an icon's Renderinfo: its bitmap's width, drawn at the bar's middle plus
+# iconOffset in its colours; one not in the cache is nothing, 0 wide
+def icon.ri(m: Maybe<&2, Icon>, +info: T.Info, acts: Maybe<&2, List<&2, T.Action>>, +cbg: String, +ioff: U32, +ht: U32) -> RI:
+  match m:
+    case Some{Icon{_, +i, +w, _}}:
+      +fb = components(cbg, info.colors(info))
+      RI{RIcon{i, px(w), round.q(U32.add(U32.mul(ht, 1024), px(ioff))), fb.fg(fb), fb.bg.of(fb)}, px(w), info, acts}
+    case None{}:
+      RI{RNone{}, 0, info, acts}
+
 # withRenderinfo: a text's width is its logical width less its x; it is
 # drawn at the font's offset plus (height - h + y) / 2
-def infos(ss: List<&2, T.Seg>, es: List<&2, Ext>, +p: Paint, +ht: U32, +n: U32) -> RIs:
+def infos(ss: List<&2, T.Seg>, es: List<&2, Ext>, +p: Paint, +icons: List<&2, Icon>, +ht: U32, +n: U32) -> RIs:
   match ss es:
     case Nil{} es:
       RIs{Nil{}, n, es}
     case Con{T.Seg{T.WText{_}, info, idx, acts}, rest} Con{Ext{+o, +u, +w, +h}, er}:
       +voff = U32.add(U32.sub(U32.add(px(indexed.offset(paint.off(p), paint.offs(p), idx)), U32.mul(ht, 1024)), h), u)
-      ris.cons(RI{RText{n, U32.mul(w, 2), voff}, U32.mul(U32.sub(w, o), 2), info, acts}, infos(rest, er, p, ht, U32.inc(n)))
+      ris.cons(RI{RText{n, U32.mul(w, 2), voff}, U32.mul(U32.sub(w, o), 2), info, acts}, infos(rest, er, p, icons, ht, U32.inc(n)))
     case Con{T.Seg{T.WHspace{+k}, info, _, acts}, rest} es:
-      ris.cons(RI{RNone{}, px(k), info, acts}, infos(rest, es, p, ht, n))
+      ris.cons(RI{RNone{}, px(k), info, acts}, infos(rest, es, p, icons, ht, n))
+    case Con{T.Seg{T.WIcon{+path}, info, _, acts}, rest} es:
+      ris.cons(icon.ri(icon.find(path, icons), info, acts, paint.bg(p), paint.icon(p), ht), infos(rest, es, p, icons, ht, n))
     case Con{T.Seg{_, info, _, acts}, rest} es:
-      ris.cons(RI{RNone{}, 0, info, acts}, infos(rest, es, p, ht, n))
+      ris.cons(RI{RNone{}, 0, info, acts}, infos(rest, es, p, icons, ht, n))
 
 # a segment's actions and where it is
 type ActPos is Data:
@@ -331,6 +410,8 @@ def seg.render(k: RK, +off: U32, +mx: U32) -> String:
   match k:
     case RText{+i, +w, +voff}:
       "T " ++ U32.show(i) ++ nums([off, voff]) ++ " " ++ Bool.pick(String, s.lt(mx, U32.add(off, w)), U32.show(U32.shr(U32.sub(mx, off))), "-1") ++ "\n"
+    case RIcon{+i, +w, +y, +fg, +bg}:
+      H.Bool.if(String, s.lt(mx, U32.add(off, w)), _ => "", _ => "I " ++ U32.show(i) ++ nums([round.q(off), y]) ++ " " ++ codes(fg) ++ " " ++ codes(bg) ++ "\n")
     case RNone{}:
       ""
 
@@ -589,17 +670,18 @@ def sec(n: Nat, secs: List<&2, List<&2, T.Seg>>) -> List<&2, T.Seg>:
     case _ _:
       Nil{}
 
-def frame.r(+p: Paint, +w: U32, +h: U32, l: RIs, +c: RIs, +rsegs: List<&2, T.Seg>) -> Frame:
-  +r = infos(rsegs, ris.exts(c), p, h, ris.n(c))
+def frame.r(+p: Paint, +icons: List<&2, Icon>, +w: U32, +h: U32, l: RIs, +c: RIs, +rsegs: List<&2, T.Seg>) -> Frame:
+  +r = infos(rsegs, ris.exts(c), p, icons, h, ris.n(c))
   place.all(draw.segs(ris.of(l), Acc{0, Nil{}, Nil{}, ""}, paint.bg(p), h, px(w)), ris.of(c), ris.of(r), p, w, h)
 
-def frame.c(+p: Paint, +w: U32, +h: U32, +l: RIs, +csegs: List<&2, T.Seg>, +rsegs: List<&2, T.Seg>) -> Frame:
-  frame.r(p, w, h, l, infos(csegs, ris.exts(l), p, h, ris.n(l)), rsegs)
+def frame.c(+p: Paint, +icons: List<&2, Icon>, +w: U32, +h: U32, +l: RIs, +csegs: List<&2, T.Seg>, +rsegs: List<&2, T.Seg>) -> Frame:
+  frame.r(p, icons, w, h, l, infos(csegs, ris.exts(l), p, icons, h, ris.n(l)), rsegs)
 
 # drawSegments: the bar of width w and height h (pixels), its left, center
-# and right segments, the extents of their texts' markups (markups' order)
-def frame(+p: Paint, +w: U32, +h: U32, +secs: List<&2, List<&2, T.Seg>>, exts: List<&2, Ext>) -> Frame:
-  frame.c(p, w, h, infos(sec(0n, secs), exts, p, h, 0), sec(1n, secs), sec(2n, secs))
+# and right segments, the extents of their texts' markups (markups' order),
+# the icons in the cache
+def frame(+p: Paint, +w: U32, +h: U32, +secs: List<&2, List<&2, T.Seg>>, exts: List<&2, Ext>, +icons: List<&2, Icon>) -> Frame:
+  frame.c(p, icons, w, h, infos(sec(0n, secs), exts, p, icons, h, 0), sec(1n, secs), sec(2n, secs))
 
 # Actions --------------------------------------------------------------------------------
 

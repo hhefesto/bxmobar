@@ -68,18 +68,20 @@
           p.stm
           p.async
         ]);
-      # x11.c's libraries: X11 with Xrender, Xrandr and Xinerama, Cairo, Pango
+      # x11.c's libraries: X11 with Xrender, Xrandr, Xinerama and Xpm, Cairo,
+      # Pango
       xLibs =
         pkgs: with pkgs; [
           libx11
           libxrender
           libxrandr
           libxinerama
+          libxpm
           cairo
           pango
           glib
         ];
-      xModules = "pangocairo cairo-xlib xrender xrandr xinerama x11";
+      xModules = "pangocairo cairo-xlib xrender xrandr xinerama xpm x11";
       # their flags, for the C compiler bend runs (its wrapper reads them
       # under the platform's suffix), from pkg-config
       xFlags =

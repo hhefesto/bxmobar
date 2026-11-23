@@ -923,7 +923,7 @@ def now.sec(n: Now) -> U32:
 # and the font's height, how it draws, standard input's use, the run's
 # first second, each section's count of parts
 type XC is Data:
-  XC{win: U32, pos: C.Pos, broadest: Bool, ht: U32, paint: Dr.Paint, fg: String, bg: String, alpha: U32, dpi: String, stdin: Bool, sec0: U32, counts: List<&2, Nat>}
+  XC{win: U32, pos: C.Pos, broadest: Bool, ht: U32, paint: Dr.Paint, fg: String, bg: String, alpha: U32, dpi: String, stdin: Bool, sec0: U32, counts: List<&2, Nat>, root: String}
 
 # what changes: the window's rectangle, where the actions are, the
 # sections' texts last drawn (None: draw again)
@@ -1034,22 +1034,53 @@ def rect.wh(r: W.Rect) -> List<&2, U32>:
     case W.Rect{_, _, w, h}:
       [w, h]
 
-def frame.at(+p: Dr.Paint, wh: List<&2, U32>, +segs: List<&2, List<&2, T.Seg>>, exts: List<&2, Dr.Ext>) -> Dr.Frame:
+def frame.at(+p: Dr.Paint, wh: List<&2, U32>, +segs: List<&2, List<&2, T.Seg>>, exts: List<&2, Dr.Ext>, +icons: List<&2, Dr.Icon>) -> Dr.Frame:
   match wh:
     case Con{+w, Con{+h, _}}:
-      Dr.frame(p, w, h, segs, exts)
+      Dr.frame(p, w, h, segs, exts, icons)
     case _:
-      Dr.frame(p, 0, 0, segs, exts)
+      Dr.frame(p, 0, 0, segs, exts, icons)
 
-# Draw.draw: the sections parsed, their texts measured, the frame drawn
+# FilePath's </> (Posix): b when it is absolute or a empty, a when b is
+# empty, else joined by one /
+def fp.join(+a: String, +b: String) -> String:
+  H.Bool.if(String, Bool.or(H.first.is(b, 47), String.is_empty(a)), _ => b, _ => H.Bool.if(String, String.is_empty(b), _ => a, _ => H.Bool.if(String, String.ends_with(a, "/"), _ => a ++ b, _ => a ++ "/" ++ b)))
+
+# updateCache's expandPath: a path from / or ./ or ../ as it is, else
+# under iconRoot
+def icon.full(+root: String, +p: String) -> String:
+  H.Bool.if(String, Bool.or(H.first.is(p, 47), Bool.or(String.starts_with(p, "./"), String.starts_with(p, "../"))), _ => p, _ => fp.join(root, p))
+
+def icon.cons(+p: String, ws: List<&2, U32>, more: List<&2, Dr.Icon>) -> List<&2, Dr.Icon>:
+  match ws:
+    case Con{+i, Con{+w, Con{+h, _}}}:
+      Dr.Icon{p, i, w, h} <> more
+    case _:
+      more
+
+# updateIconCache: each icon the segments name, loaded if not yet; the
+# ones in the cache
+def x.icons(+win: U32, +root: String, ps: List<&2, String>) -> IO(List<&2, Dr.Icon>):
+  match ps:
+    case Nil{}:
+      IO.pure(List<&2, Dr.Icon>, Nil{})
+    case Con{+p, rest}:
+      do IO<List<&2, Dr.Icon>>:
+        ws : List<&2, U32> <- X.icon(win, p, icon.full(root, p))
+        more : List<&2, Dr.Icon> <- x.icons(win, root, rest)
+        IO.pure(List<&2, Dr.Icon>, icon.cons(p, ws, more))
+
+# Draw.draw: the sections parsed, their icons loaded, their texts
+# measured, the frame drawn
 def x.frame(xc: XC, +r: W.Rect, +ts: List<&2, String>) -> IO(List<&2, Dr.ActPos>):
   match xc:
-    case XC{+win, _, _, _, +p, +fg, +bg, +alpha, +dpi, _, _, _}:
+    case XC{+win, _, _, _, +p, +fg, +bg, +alpha, +dpi, _, _, _, +root}:
       +segs = parse.secs(fg, ts)
       do IO<List<&2, Dr.ActPos>>:
+        icons : List<&2, Dr.Icon> <- x.icons(win, root, Dr.icon.paths(segs, Nil{}))
         _ : U32 <- X.begin(dpi)
         exts : List<&2, Dr.Ext> <- x.measure(Dr.markups(p, segs))
-        x.put(win, r, bg, alpha, frame.at(p, rect.wh(r), segs, exts))
+        x.put(win, r, bg, alpha, frame.at(p, rect.wh(r), segs, exts, icons))
 
 def x.redrawn(+xc: XC, +r: W.Rect, +ts: List<&2, String>) -> IO(XS):
   do IO<XS>:
@@ -1091,7 +1122,7 @@ def x.move(+win: U32, r: List<&2, U32>) -> IO(U32):
 # there, its struts set
 def x.reposition(xc: XC) -> IO(W.Rect):
   match xc:
-    case XC{+win, +p, +broadest, +ht, _, _, _, _, _, _, _, _}:
+    case XC{+win, +p, +broadest, +ht, _, _, _, _, _, _, _, _, _}:
       do IO<W.Rect>:
         +rs : List<&2, W.Rect> <- x.screens()
         +r : W.Rect <- IO.pure(W.Rect, rect.of.at(broadest, p, rs, ht))
@@ -1156,17 +1187,17 @@ def x.woke(+k: U32, +xc: XC, +ps: List<&2, Part>, +s: XS) -> IO(XW):
 
 def xc.sec0(xc: XC) -> U32:
   match xc:
-    case XC{_, _, _, _, _, _, _, _, _, _, s, _}:
+    case XC{_, _, _, _, _, _, _, _, _, _, s, _, _}:
       s
 
 def xc.counts(xc: XC) -> List<&2, Nat>:
   match xc:
-    case XC{_, _, _, _, _, _, _, _, _, _, _, c}:
+    case XC{_, _, _, _, _, _, _, _, _, _, _, c, _}:
       c
 
 def xc.stdin(xc: XC) -> U32:
   match xc:
-    case XC{_, _, _, _, _, _, _, _, _, i, _, _}:
+    case XC{_, _, _, _, _, _, _, _, _, i, _, _, _}:
       Bool.pick(U32, i, 1, 0)
 
 # the X bar's loop: the parts due run, the frame drawn when the sections'
@@ -1200,7 +1231,7 @@ def x.create.at(r: List<&2, U32>, +o: U32) -> IO(U32):
 # hideOnStart; then the event loop's input selected, and the loop
 def x.win.at(+c: C.Config, +ps: List<&2, Part>, +counts: List<&2, Nat>, +rs: List<&2, W.Rect>, +ht: U32, +sec0: U32) -> IO(Unit):
   match c:
-    case C.Config{_, _, +cls, +name, +bg, +fg, +pos, _, _, _, _, _, _, _, _, +alpha, +hide, +alld, +over, +broad, +lower, _, _, _, _, _, _, _, +dpi}:
+    case C.Config{_, _, +cls, +name, +bg, +fg, +pos, _, _, _, _, _, _, _, _, +alpha, +hide, +alld, +over, +broad, +lower, _, +root, _, _, _, _, _, +dpi}:
       +r = W.set.position(broad, pos, rs, ht)
       do IO<Unit>:
         +win : U32 <- x.create.at(rect.parts(r), x.bool(over))
@@ -1215,7 +1246,7 @@ def x.win.at(+c: C.Config, +ps: List<&2, Part>, +counts: List<&2, Nat>, +rs: Lis
         _ : U32 <- x.when(lower, _ => X.lower(win))
         _ : U32 <- x.when(Bool.not(hide), _ => x.show(win, r, pos))
         _ : U32 <- X.select(win)
-        x.loop(fuel(), True{}, XC{win, pos, broad, ht, Dr.look(c), fg, bg, alpha, dpi, has.stdin(ps), sec0, counts}, ps, XS{r, Nil{}, None{}})
+        x.loop(fuel(), True{}, XC{win, pos, broad, ht, Dr.look(c), fg, bg, alpha, dpi, has.stdin(ps), sec0, counts, root}, ps, XS{r, Nil{}, None{}})
 
 def x.font.ht(fe: List<&2, U32>) -> Maybe<&2, U32>:
   match fe:
